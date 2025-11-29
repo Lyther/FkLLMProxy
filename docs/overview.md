@@ -1,7 +1,7 @@
 # Vertex AI LLM Proxy for Cursor IDE
 
-> **Project Codename:** `vertex-bridge`  
-> **Version:** 2.0 (Rust Native)  
+> **Project Codename:** `vertex-bridge`
+> **Version:** 2.0 (Rust Native)
 > **Last Updated:** November 2025
 
 ## Executive Summary

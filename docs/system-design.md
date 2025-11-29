@@ -11,7 +11,7 @@ C4Context
     title System Context Diagram for Vertex AI LLM Proxy
 
     Person(developer, "Developer", "Uses Cursor IDE for coding assistance")
-    
+
     System_Boundary(proxy_boundary, "Vertex Bridge System") {
         System(vertex_bridge, "Vertex Bridge Proxy", "Rust/Axum Service\nTranslates OpenAI API to Vertex AI format.\nHandles Auth & Rate Limiting.")
     }

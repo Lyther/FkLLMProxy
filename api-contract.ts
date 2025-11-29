@@ -1,6 +1,6 @@
 /**
  * API Contract: OpenAI Chat Completions (Supported Subset)
- * 
+ *
  * This defines the interface between the Client (Cursor) and the Proxy.
  * The Proxy must accept this format and translate it to the Provider's format.
  */
