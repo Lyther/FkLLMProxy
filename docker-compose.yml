@@ -1,0 +1,19 @@
+services:
+  vertex-bridge:
+    build: .
+    container_name: vertex-bridge
+    ports:
+      - "4000:4000"
+    environment:
+      - APP_SERVER__HOST=0.0.0.0
+      - APP_SERVER__PORT=4000
+      - APP_AUTH__REQUIRE_AUTH=true
+      - APP_AUTH__MASTER_KEY=${APP_AUTH__MASTER_KEY:-sk-vertex-bridge-dev}
+      - APP_VERTEX__PROJECT_ID=${APP_VERTEX__PROJECT_ID}
+      - APP_VERTEX__REGION=${APP_VERTEX__REGION:-us-central1}
+      - GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/sa.json
+      - APP_LOG__LEVEL=${APP_LOG__LEVEL:-info}
+    volumes:
+      - ./fkllmproxy-ae517f79b1d1.json:/etc/gcp/sa.json:ro
+    restart: unless-stopped
+

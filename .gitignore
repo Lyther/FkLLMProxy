@@ -4,4 +4,6 @@ Cargo.lock
 .DS_Store
 .env
 service-account.json
+fkllmproxy-*.json
+*.json.bak
 .vscode/
