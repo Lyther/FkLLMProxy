@@ -11,10 +11,9 @@ pub struct ServerConfig {
     pub port: u16,
 }
 
-#[derive(Debug, Deserialize, Clone, Validate)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct AuthConfig {
     pub require_auth: bool,
-    #[validate(length(min = 1))]
     pub master_key: String,
 }
 
@@ -35,7 +34,6 @@ pub struct LogConfig {
 pub struct AppConfig {
     #[validate(nested)]
     pub server: ServerConfig,
-    #[validate(nested)]
     pub auth: AuthConfig,
     #[validate(nested)]
     pub vertex: VertexConfig,
@@ -55,11 +53,16 @@ impl AppConfig {
             .set_default("server.host", "127.0.0.1")?
             .set_default("server.port", 4000)?
             .set_default("auth.require_auth", false)?
+            .set_default("auth.master_key", "")?
             .set_default("vertex.region", "us-central1")?
             .set_default("log.level", "info")?
             // Load from Environment Variables
             // APP_SERVER__PORT=4000 maps to server.port
-            .add_source(config::Environment::with_prefix("APP").separator("__"))
+            .add_source(
+                config::Environment::with_prefix("APP")
+                    .separator("__")
+                    .try_parsing(true),
+            )
             // Map specific Google env vars
             // GOOGLE_API_KEY -> vertex.api_key
             .add_source(
@@ -67,8 +70,22 @@ impl AppConfig {
                     .separator("_")
                     .try_parsing(true),
             )
-            // Note: config crate mapping is tricky with underscores. Let's manually override if needed.
-            .set_override("vertex.api_key", env::var("GOOGLE_API_KEY").ok())?
+            // Explicit overrides for env vars (config crate can be finicky with case)
+            .set_override_option("server.host", env::var("APP_SERVER__HOST").ok())?
+            .set_override_option(
+                "server.port",
+                env::var("APP_SERVER__PORT")
+                    .ok()
+                    .and_then(|v| v.parse::<i64>().ok()),
+            )?
+            .set_override_option(
+                "auth.require_auth",
+                env::var("APP_AUTH__REQUIRE_AUTH")
+                    .ok()
+                    .map(|v| v.to_lowercase() == "true"),
+            )?
+            .set_override_option("auth.master_key", env::var("APP_AUTH__MASTER_KEY").ok())?
+            .set_override_option("vertex.api_key", env::var("GOOGLE_API_KEY").ok())?
             .build()?;
 
         let config: AppConfig = s.try_deserialize()?;
@@ -79,6 +96,12 @@ impl AppConfig {
         }
 
         // 3. Custom Logic Validation
+        if config.auth.require_auth && config.auth.master_key.is_empty() {
+            return Err(ConfigError::Message(
+                "APP_AUTH__MASTER_KEY is required when APP_AUTH__REQUIRE_AUTH=true".into(),
+            ));
+        }
+
         if config.vertex.api_key.is_none() && config.vertex.project_id.is_none() {
             // Check if GOOGLE_APPLICATION_CREDENTIALS is set in env if not in config
             if env::var("GOOGLE_APPLICATION_CREDENTIALS").is_err() {

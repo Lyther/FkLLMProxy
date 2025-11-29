@@ -1,5 +1,8 @@
 # Use a Rust base image
-FROM rust:1.83-slim-bookworm as builder
+FROM rust:1.91-slim-bookworm AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /usr/src/app
 COPY . .
@@ -14,7 +17,6 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates libssl-dev && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/src/app/target/release/vertex-bridge /usr/local/bin/vertex-bridge
-COPY vertex-bridge.toml /etc/vertex-bridge/vertex-bridge.toml
 
 # Set environment variables
 ENV APP_SERVER__HOST=0.0.0.0
