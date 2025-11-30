@@ -29,6 +29,7 @@ interface OpenAIChunk {
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '4001', 10); // Different from main proxy port 4000
+const HOST = process.env.HOST || '0.0.0.0'; // Bind to all interfaces for Docker
 
 app.use(bodyParser.json({ limit: '50mb' }));
 
@@ -120,7 +121,8 @@ app.post('/anthropic/chat', async (req, res) => {
   claude.on('close', (code: number | null) => {
     console.log(`[Bridge] Claude process exited with code ${code}`);
 
-    if (code !== 0 && code !== null) {
+    // Treat as error if: non-zero exit code OR signal termination (code === null)
+    if (code !== 0 || code === null) {
       // Send error finish reason
       const errorChunk: OpenAIChunk = {
         id: 'chatcmpl-bridge-error',
