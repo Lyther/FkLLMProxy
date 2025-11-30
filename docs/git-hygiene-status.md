@@ -15,29 +15,28 @@
 1. **GPG signing configured**:
    - GPG key generated: `5279DF98A4CB49FD`
    - Global git config set: `user.signingkey` and `commit.gpgsign = true`
-   - Test commit verified: ✅ Future commits will be automatically signed
+   - All commits verified: ✅ All 8 commits are signed
+   - Future commits will be automatically signed
 
-2. **Invalid commit message fixed**:
-   - `01b01cd some changes` → `126b2c1 chore: some changes`
-   - History rewritten using `git filter-branch`
-   - All commit messages now follow conventional format (except initial commit)
+### ✅ Additional Remediation Completed
 
-### ⚠️  Known Issues
+1. **All historical commits retroactively signed** ✅
+   - Status: Complete - all commits in history are now signed
+   - Method: Used `git rebase --exec` to amend each commit with GPG signature
+   - Result: All 8 commits are verified and signed
 
-1. **Historical commits are unsigned** (7 commits before configuration)
-   - Status: Expected behavior - old commits cannot be retroactively signed
-   - Impact: None - future commits are automatically signed
-   - Action: None required
-
-2. **Initial commit format** (1 commit: `3dbce8c initial commit`)
-   - Status: Acceptable - initial commits are exempt from format requirements
-   - Impact: None
+2. **Initial commit message reformatted** ✅
+   - Status: Complete - changed from `initial commit` to `chore: initial project setup`
+   - Method: Used `git filter-branch` to update commit message
+   - Result: All commit messages now follow conventional format
 
 ### ✅ Passed Checks
 
-- **Bisectability**: All checked commits compile successfully
-- **Atomicity**: No broken intermediate states detected
-- **Commit signing**: Future commits are automatically signed
+- **Commit signatures**: ✅ All 8 commits are signed and verified
+- **Commit message format**: ✅ All commits follow conventional format
+- **Bisectability**: ✅ All checked commits compile successfully
+- **Atomicity**: ✅ No broken intermediate states detected
+- **Verification script**: ✅ All checks pass
 
 ## Verification
 
@@ -54,8 +53,21 @@ Run the verification script to check current status:
 - **Automatic signing**: All new commits are signed by default
 - **Manual verification**: Run `./scripts/verify-git-history.sh` before releases
 
+## Current Branch Status
+
+- **Branch**: `main`
+- **Latest commit**: `8737c5e` (signed ✅)
+- **All commits signed**: ✅ 8/8 commits verified
+- **All commit messages formatted**: ✅ Conventional format
+- **Remote sync**: Branch has diverged (history rewritten - force push required)
+
 ## Notes
 
-- Branch history was rewritten to fix commit message (using `git filter-branch`)
-- If you've already pushed, you'll need to force push: `git push --force-with-lease`
+- Branch history was rewritten twice:
+  1. Fixed commit message format (using `git filter-branch`)
+  2. Retroactively signed all commits (using `git rebase --exec`)
+- Initial commit message changed: `initial commit` → `chore: initial project setup`
+- Remote repository needs force push: `git push --force-with-lease origin main`
 - GPG key is stored in `~/.gnupg/` and can be exported for backup
+- Pre-push hook will block unsigned commits (signing is automatic, so this is rarely an issue)
+- **All known issues have been resolved** ✅
