@@ -1,9 +1,57 @@
+# Rust
 /target
 **/*.rs.bk
 Cargo.lock
-.DS_Store
+
+# Environment & Secrets
 .env
+.env.local
+.env.*.local
 service-account.json
 fkllmproxy-*.json
 *.json.bak
+
+# Logs
+logs/
+*.log
+server.log
+
+# IDE
 .vscode/
+.idea/
+*.swp
+*.swo
+.cursor/
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*~
+
+# Build artifacts
+*.o
+*.so
+*.dylib
+*.dll
+
+# Coverage reports
+*.gcda
+*.gcno
+*.profdata
+coverage/
+*.lcov
+
+# Debug files
+*.pdb
+*.dSYM/
