@@ -198,15 +198,15 @@ app.post('/anthropic/chat', async (req, res) => {
 });
 
 // Start server
-app.listen(PORT, () => {
+app.listen(PORT, HOST, () => {
   console.log(`
 ==================================================
-   ANTHROPIC CLI BRIDGE - PORT ${PORT}
+   ANTHROPIC CLI BRIDGE - ${HOST}:${PORT}
    TARGET: local "claude" CLI command
    MODE: STDIO-TO-HTTP BRIDGE
 ==================================================
 1. Ensure you ran 'claude login' in your terminal
-2. The Rust proxy should connect to http://localhost:${PORT}/anthropic/chat
+2. The Rust proxy should connect to http://${HOST}:${PORT}/anthropic/chat
 3. Bridge serves OpenAI-compatible SSE responses
 ==================================================
   `);
