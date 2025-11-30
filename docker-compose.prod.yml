@@ -1,0 +1,98 @@
+version: '3.8'
+
+services:
+  vertex-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: fkllmproxy:latest
+    container_name: fkllmproxy-proxy
+    ports:
+      - "4000:4000"
+    environment:
+      - APP_SERVER__HOST=0.0.0.0
+      - APP_SERVER__PORT=4000
+      - APP_AUTH__REQUIRE_AUTH=true
+      - APP_AUTH__MASTER_KEY=${APP_AUTH__MASTER_KEY}
+      - APP_VERTEX__PROJECT_ID=${APP_VERTEX__PROJECT_ID}
+      - APP_VERTEX__REGION=${APP_VERTEX__REGION:-us-central1}
+      - GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/sa.json
+      - APP_LOG__LEVEL=${APP_LOG__LEVEL:-info}
+      - APP_LOG__FORMAT=json
+      - APP_OPENAI__HARVESTER_URL=http://harvester:3001
+      - APP_ANTHROPIC__BRIDGE_URL=http://anthropic-bridge:4001
+      - APP_RATE_LIMIT__CAPACITY=${APP_RATE_LIMIT__CAPACITY:-1000}
+      - APP_RATE_LIMIT__REFILL_PER_SECOND=${APP_RATE_LIMIT__REFILL_PER_SECOND:-100}
+      - APP_CIRCUIT_BREAKER__FAILURE_THRESHOLD=${APP_CIRCUIT_BREAKER__FAILURE_THRESHOLD:-10}
+      - APP_CIRCUIT_BREAKER__TIMEOUT_SECS=${APP_CIRCUIT_BREAKER__TIMEOUT_SECS:-60}
+      - APP_CIRCUIT_BREAKER__SUCCESS_THRESHOLD=${APP_CIRCUIT_BREAKER__SUCCESS_THRESHOLD:-3}
+    volumes:
+      - ${GOOGLE_APPLICATION_CREDENTIALS}:/etc/gcp/sa.json:ro
+    depends_on:
+      harvester:
+        condition: service_healthy
+      anthropic-bridge:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - fkllmproxy-network
+
+  anthropic-bridge:
+    build:
+      context: ./bridge
+      dockerfile: Dockerfile
+    image: fkllmproxy-anthropic-bridge:latest
+    container_name: fkllmproxy-anthropic-bridge
+    ports:
+      - "4001:4001"
+    environment:
+      - PORT=4001
+      - HOST=0.0.0.0
+      - NODE_ENV=production
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - fkllmproxy-network
+
+  harvester:
+    build:
+      context: ./harvester
+      dockerfile: Dockerfile
+    image: fkllmproxy-harvester:latest
+    container_name: fkllmproxy-harvester
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - HOST=0.0.0.0
+      - NODE_ENV=production
+    volumes:
+      - harvester-cookies:/app/cookies.json
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - fkllmproxy-network
+
+volumes:
+  harvester-cookies:
+
+networks:
+  fkllmproxy-network:
+    driver: bridge
+

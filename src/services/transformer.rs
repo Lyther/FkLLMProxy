@@ -1,108 +1,110 @@
-use crate::models::openai::{
-    ChatCompletionChoice, ChatCompletionChunk, ChatCompletionChunkChoice, ChatCompletionRequest,
-    ChatCompletionResponse, ChatMessage, DeltaMessage, Role, Usage,
+use crate::models::{
+    openai::{
+        ChatCompletionChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Role,
+        Usage,
+    },
+    vertex::{Content, GenerateContentRequest, GenerateContentResponse, GenerationConfig, Part},
 };
-use crate::models::vertex::{
-    Content, GenerateContentRequest, GenerateContentResponse, GenerationConfig, Part,
-};
-use anyhow::Result;
-use std::time::{SystemTime, UNIX_EPOCH};
+use anyhow::{Context, Result};
+use chrono::Utc;
 
 pub fn transform_request(req: ChatCompletionRequest) -> Result<GenerateContentRequest> {
-    let mut contents = Vec::new();
-    let mut system_instruction = None;
+    let contents: Result<Vec<Content>> = req
+        .messages
+        .iter()
+        .map(|msg| {
+            let role = match msg.role {
+                Role::User => "user",
+                Role::Assistant => "model",
+                Role::System => "user", // System messages become user messages in Vertex
+                Role::Tool => "user",   // Tool messages become user messages
+            };
 
-    for msg in req.messages {
-        match msg.role {
-            Role::System => {
-                // Vertex supports system_instruction separately
-                system_instruction = Some(Content {
-                    role: "user".to_string(), // System instruction is technically "user" role in some contexts or special field
-                    parts: vec![Part {
-                        text: Some(msg.content),
-                    }],
-                });
+            Ok(Content {
+                role: role.to_string(),
+                parts: vec![Part {
+                    text: Some(msg.content.clone()),
+                }],
+            })
+        })
+        .collect();
+
+    let mut vertex_req = GenerateContentRequest {
+        contents: contents?,
+        system_instruction: None,
+        generation_config: Some(GenerationConfig {
+            temperature: Some(req.temperature),
+            top_p: Some(req.top_p),
+            max_output_tokens: req.max_tokens,
+            stop_sequences: req.stop,
+            candidate_count: None,
+        }),
+        safety_settings: None,
+    };
+
+    // Extract system message if present
+    if let Some(system_msg) = req.messages.iter().find(|m| matches!(m.role, Role::System)) {
+        vertex_req.system_instruction = Some(Content {
+            role: "user".to_string(),
+            parts: vec![Part {
+                text: Some(system_msg.content.clone()),
+            }],
+        });
+        // Remove system message from contents
+        let system_content = system_msg.content.clone();
+        vertex_req.contents.retain(|c| {
+            if let Some(text) = c.parts.first().and_then(|p| p.text.as_ref()) {
+                system_content != *text
+            } else {
+                true
             }
-            Role::User => {
-                contents.push(Content {
-                    role: "user".to_string(),
-                    parts: vec![Part {
-                        text: Some(msg.content),
-                    }],
-                });
-            }
-            Role::Assistant => {
-                contents.push(Content {
-                    role: "model".to_string(),
-                    parts: vec![Part {
-                        text: Some(msg.content),
-                    }],
-                });
-            }
-            Role::Tool => {
-                // TODO: Handle tool outputs
-            }
-        }
+        });
     }
 
-    let generation_config = Some(GenerationConfig {
-        temperature: Some(req.temperature),
-        top_p: Some(req.top_p),
-        max_output_tokens: req.max_tokens,
-        stop_sequences: req.stop,
-        candidate_count: Some(1),
-    });
-
-    Ok(GenerateContentRequest {
-        contents,
-        system_instruction,
-        generation_config,
-        safety_settings: None, // Use defaults
-    })
+    Ok(vertex_req)
 }
 
 pub fn transform_response(
     vertex_res: GenerateContentResponse,
     model: String,
-    id: String,
+    request_id: String,
 ) -> Result<ChatCompletionResponse> {
-    let created = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-
-    let choices = vertex_res
+    let candidate = vertex_res
         .candidates
-        .unwrap_or_default()
-        .into_iter()
-        .enumerate()
-        .map(|(i, c)| {
-            let content = c
-                .content
-                .and_then(|c| c.parts.first().and_then(|p| p.text.clone()))
-                .unwrap_or_default();
+        .as_ref()
+        .and_then(|c| c.first())
+        .context("No candidates in Vertex response")?;
 
-            ChatCompletionChoice {
-                index: i as u32,
-                message: ChatMessage {
-                    role: Role::Assistant,
-                    content,
-                    name: None,
-                },
-                finish_reason: c.finish_reason.map(|s| s.to_lowercase()),
-            }
-        })
-        .collect();
+    let content = candidate
+        .content
+        .as_ref()
+        .and_then(|c| c.parts.first())
+        .and_then(|p| p.text.as_ref())
+        .context("No content in Vertex response")?
+        .clone();
 
-    let usage = vertex_res.usage_metadata.map(|u| Usage {
+    let finish_reason = candidate.finish_reason.as_ref().map(|s| s.to_lowercase());
+
+    let usage = vertex_res.usage_metadata.as_ref().map(|u| Usage {
         prompt_tokens: u.prompt_token_count.unwrap_or(0),
         completion_tokens: u.candidates_token_count.unwrap_or(0),
         total_tokens: u.total_token_count.unwrap_or(0),
     });
 
     Ok(ChatCompletionResponse {
-        id,
+        id: request_id,
         object: "chat.completion".to_string(),
-        created,
+        created: Utc::now().timestamp() as u64,
         model,
-        choices,
+        choices: vec![ChatCompletionChoice {
+            index: candidate.index.unwrap_or(0),
+            message: ChatMessage {
+                role: Role::Assistant,
+                content,
+                name: None,
+            },
+            finish_reason,
+        }],
         usage,
     })
 }
@@ -110,41 +112,156 @@ pub fn transform_response(
 pub fn transform_stream_chunk(
     vertex_res: GenerateContentResponse,
     model: String,
-    id: String,
-) -> Result<ChatCompletionChunk> {
-    let created = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-
-    let choices = vertex_res
+    request_id: String,
+) -> Result<crate::models::openai::ChatCompletionChunk> {
+    let candidate = vertex_res
         .candidates
-        .unwrap_or_default()
-        .into_iter()
-        .enumerate()
-        .map(|(i, c)| {
-            let content = c
-                .content
-                .and_then(|c| c.parts.first().and_then(|p| p.text.clone()));
+        .as_ref()
+        .and_then(|c| c.first())
+        .context("No candidates in Vertex response")?;
 
-            ChatCompletionChunkChoice {
-                index: i as u32,
-                delta: DeltaMessage {
-                    role: if content.is_some() {
-                        Some(Role::Assistant)
-                    } else {
-                        None
-                    }, // Only send role on first chunk ideally, but here we might send it often. OpenAI usually sends role only in first chunk.
-                    // Actually, Vertex might send empty content for finish reason.
-                    content,
-                },
-                finish_reason: c.finish_reason.map(|s| s.to_lowercase()),
-            }
-        })
-        .collect();
+    let content = candidate
+        .content
+        .as_ref()
+        .and_then(|c| c.parts.first())
+        .and_then(|p| p.text.as_ref())
+        .cloned();
 
-    Ok(ChatCompletionChunk {
-        id,
+    let finish_reason = candidate.finish_reason.as_ref().map(|s| s.to_lowercase());
+
+    Ok(crate::models::openai::ChatCompletionChunk {
+        id: request_id,
         object: "chat.completion.chunk".to_string(),
-        created,
+        created: Utc::now().timestamp() as u64,
         model,
-        choices,
+        choices: vec![crate::models::openai::ChatCompletionChunkChoice {
+            index: candidate.index.unwrap_or(0),
+            delta: crate::models::openai::DeltaMessage {
+                role: None,
+                content,
+            },
+            finish_reason,
+        }],
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::openai::{ChatMessage, Role};
+    use crate::models::vertex::{Candidate, UsageMetadata};
+
+    #[test]
+    fn test_transform_request_basic() {
+        let req = ChatCompletionRequest {
+            model: "gemini-pro".to_string(),
+            messages: vec![
+                ChatMessage {
+                    role: Role::User,
+                    content: "Hello".to_string(),
+                    name: None,
+                },
+                ChatMessage {
+                    role: Role::Assistant,
+                    content: "Hi there".to_string(),
+                    name: None,
+                },
+            ],
+            stream: false,
+            temperature: 0.7,
+            top_p: 0.9,
+            max_tokens: Some(100),
+            stop: None,
+        };
+
+        let vertex_req = transform_request(req).unwrap();
+        assert_eq!(vertex_req.contents.len(), 2);
+        assert_eq!(vertex_req.contents[0].role, "user");
+        assert_eq!(vertex_req.contents[1].role, "model");
+        assert_eq!(
+            vertex_req.generation_config.as_ref().unwrap().temperature,
+            Some(0.7)
+        );
+        assert_eq!(
+            vertex_req
+                .generation_config
+                .as_ref()
+                .unwrap()
+                .max_output_tokens,
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn test_transform_request_with_system() {
+        let req = ChatCompletionRequest {
+            model: "gemini-pro".to_string(),
+            messages: vec![
+                ChatMessage {
+                    role: Role::System,
+                    content: "You are a helpful assistant".to_string(),
+                    name: None,
+                },
+                ChatMessage {
+                    role: Role::User,
+                    content: "Hello".to_string(),
+                    name: None,
+                },
+            ],
+            stream: false,
+            temperature: 1.0,
+            top_p: 1.0,
+            max_tokens: None,
+            stop: None,
+        };
+
+        let vertex_req = transform_request(req).unwrap();
+        assert!(vertex_req.system_instruction.is_some());
+        assert_eq!(vertex_req.contents.len(), 1);
+        assert_eq!(vertex_req.contents[0].role, "user");
+    }
+
+    #[test]
+    fn test_transform_response() {
+        let vertex_res = GenerateContentResponse {
+            candidates: Some(vec![Candidate {
+                content: Some(Content {
+                    role: "model".to_string(),
+                    parts: vec![Part {
+                        text: Some("Hello, world!".to_string()),
+                    }],
+                }),
+                finish_reason: Some("STOP".to_string()),
+                index: Some(0),
+            }]),
+            usage_metadata: Some(UsageMetadata {
+                prompt_token_count: Some(10),
+                candidates_token_count: Some(5),
+                total_token_count: Some(15),
+            }),
+        };
+
+        let response =
+            transform_response(vertex_res, "gemini-pro".to_string(), "test-id".to_string())
+                .unwrap();
+        assert_eq!(response.id, "test-id");
+        assert_eq!(response.model, "gemini-pro");
+        assert_eq!(response.choices.len(), 1);
+        assert_eq!(response.choices[0].message.content, "Hello, world!");
+        assert_eq!(response.choices[0].finish_reason, Some("stop".to_string()));
+        assert!(response.usage.is_some());
+        assert_eq!(response.usage.unwrap().total_tokens, 15);
+    }
+
+    #[test]
+    fn test_transform_response_no_candidates() {
+        let vertex_res = GenerateContentResponse {
+            candidates: None,
+            usage_metadata: None,
+        };
+
+        let result =
+            transform_response(vertex_res, "gemini-pro".to_string(), "test-id".to_string());
+        assert!(result.is_err());
+    }
 }

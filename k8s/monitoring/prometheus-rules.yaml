@@ -1,0 +1,38 @@
+groups:
+- name: fkllmproxy.rules
+  rules:
+  # SLO: 99.9% Availability (Errors / Total)
+  - alert: HighErrorRate
+    expr: |
+      rate(http_requests_total{status=~"5.."}[5m])
+      /
+      rate(http_requests_total[5m]) > 0.01
+    for: 2m
+    labels:
+      severity: critical
+    annotations:
+      summary: "High Error Rate (>1%)"
+      description: "{{ $labels.instance }} has error rate of {{ $value | humanizePercentage }} for 2m."
+      runbook_url: "https://github.com/fkllmproxy/docs/ops/runbook.md#high-error-rate"
+
+  # SLO: P99 Latency < 500ms
+  - alert: HighLatency
+    expr: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m])) > 0.5
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "High Latency (P99 > 500ms)"
+      description: "P99 latency is {{ $value | humanizeDuration }}."
+      runbook_url: "https://github.com/fkllmproxy/docs/ops/runbook.md#high-latency"
+
+  # Resource Saturation
+  - alert: ContainerMemorySaturation
+    expr: container_memory_usage_bytes{container="fkllmproxy"} / container_spec_memory_limit_bytes > 0.85
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Memory Usage > 85%"
+      description: "Container {{ $labels.instance }} is running out of memory."
+

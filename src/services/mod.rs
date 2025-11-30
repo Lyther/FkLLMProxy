@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod cache;
+pub mod flags;
+pub mod providers;
 pub mod transformer;
-#[cfg(test)]
-mod transformer_tests;

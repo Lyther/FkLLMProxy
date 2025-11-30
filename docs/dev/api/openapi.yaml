@@ -1,0 +1,280 @@
+openapi: 3.1.0
+info:
+  title: Vertex AI LLM Proxy
+  contact:
+    name: FkLLMProxy Team
+    url: https://github.com/fkllmproxy
+  description: |
+    A high-performance proxy that bridges OpenAI-compatible clients (like Cursor IDE) to Google Cloud Vertex AI (Gemini).
+    It exposes an OpenAI-compatible API interface.
+
+    **Note on Naming Conventions**: This API uses `snake_case` for JSON properties (e.g., `max_tokens`, `finish_reason`)
+    to maintain compatibility with the OpenAI API format. This is intentional and not a violation of standard JSON naming conventions.
+
+    **Note on Timestamps**: The `created` field uses Unix epoch integers (not ISO 8601 strings) to match OpenAI's format.
+  version: 1.0.0
+tags:
+  - name: System
+    description: Health and status checks
+  - name: Observability
+    description: Metrics and monitoring
+  - name: Chat
+    description: Core chat completion endpoints
+servers:
+  - url: http://localhost:4000
+    description: Local Development Server
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: API Key
+
+  schemas:
+    ChatMessage:
+      description: A single message in a chat conversation.
+      type: object
+      required:
+        - role
+        - content
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+        content:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+                properties:
+                  type:
+                    type: string
+                    enum: [text, image_url]
+                  text:
+                    type: string
+                  image_url:
+                    type: object
+                    properties:
+                      url:
+                        type: string
+        name:
+          type: string
+
+    ChatCompletionRequest:
+      description: Request parameters for creating a chat completion.
+      type: object
+      required:
+        - model
+        - messages
+      properties:
+        model:
+          type: string
+          description: The ID of the model to use (e.g., "gemini-flash").
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatMessage"
+        stream:
+          type: boolean
+          default: false
+        temperature:
+          type: number
+          default: 1.0
+        max_tokens:
+          type: integer
+        top_p:
+          type: number
+          default: 1.0
+
+    ChatCompletionResponse:
+      description: The response from a chat completion request.
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum: [chat.completion]
+        created:
+          type: integer
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              message:
+                $ref: "#/components/schemas/ChatMessage"
+              finish_reason:
+                type: string
+        usage:
+          type: object
+          properties:
+            prompt_tokens:
+              type: integer
+            completion_tokens:
+              type: integer
+            total_tokens:
+              type: integer
+
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      tags: [System]
+      security: []
+      summary: Health Check
+      description: Returns the health status of the proxy and all dependent services.
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                  - version
+                  - timestamp
+                properties:
+                  status:
+                    type: string
+                    example: "ok"
+                  version:
+                    type: string
+                    description: Application version
+                  timestamp:
+                    type: string
+                    format: date-time
+                    description: ISO 8601 timestamp
+                    example: "2025-11-30T12:00:00Z"
+                  harvester:
+                    type: object
+                    description: OpenAI Harvester service status
+                    properties:
+                      available:
+                        type: boolean
+                      browser_alive:
+                        type: boolean
+                      session_valid:
+                        type: boolean
+                      last_token_refresh:
+                        type: integer
+                        format: int64
+                      error:
+                        type: string
+                  anthropic_bridge:
+                    type: object
+                    description: Anthropic Bridge service status
+                    properties:
+                      available:
+                        type: boolean
+                      url:
+                        type: string
+                      error:
+                        type: string
+
+  /metrics:
+    get:
+      operationId: getMetrics
+      tags: [Observability]
+      security: []
+      summary: JSON Metrics
+      description: Returns application metrics in JSON format.
+      responses:
+        "200":
+          description: Metrics data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cache_hits:
+                    type: integer
+                  cache_misses:
+                    type: integer
+                  cache_hit_rate:
+                    type: number
+                  waf_blocks:
+                    type: integer
+                  waf_block_rate:
+                    type: number
+                  arkose_solves:
+                    type: integer
+                  avg_arkose_solve_time_ms:
+                    type: number
+                  total_requests:
+                    type: integer
+                  failed_requests:
+                    type: integer
+                  success_rate:
+                    type: number
+                  avg_latency_ms:
+                    type: number
+                  p50_latency_ms:
+                    type: integer
+                  p95_latency_ms:
+                    type: integer
+                  p99_latency_ms:
+                    type: integer
+
+  /metrics/prometheus:
+    get:
+      operationId: getPrometheusMetrics
+      tags: [Observability]
+      security: []
+      summary: Prometheus Metrics
+      description: Returns application metrics in Prometheus format (text/plain).
+      responses:
+        "200":
+          description: Prometheus metrics
+          content:
+            text/plain; version=0.0.4; charset=utf-8:
+              schema:
+                type: string
+                description: Prometheus exposition format
+
+  /v1/chat/completions:
+    post:
+      operationId: createChatCompletion
+      tags: [Chat]
+      summary: Create Chat Completion
+      description: Generates a model response for the given chat conversation.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatCompletionRequest"
+      responses:
+        "200":
+          description: Successful response (JSON or SSE Stream)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatCompletionResponse"
+            text/event-stream:
+              schema:
+                type: string
+                description: Server-Sent Events stream of ChatCompletionChunk
+        "400":
+          description: Bad Request (Invalid input)
+        "401":
+          description: Unauthorized (Invalid API Key)
+        "429":
+          description: Rate Limit Exceeded
+        "500":
+          description: Internal Server Error (Upstream Provider Failure)
+        "502":
+          description: Bad Gateway (Upstream provider unavailable)
+        "503":
+          description: Service Unavailable (Circuit breaker open)
+        "504":
+          description: Gateway Timeout (Upstream provider timeout)

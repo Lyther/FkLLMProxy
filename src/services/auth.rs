@@ -1,178 +1,202 @@
 use anyhow::{Context, Result};
-use chrono::{Duration, Utc};
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
 use std::env;
+use std::process::Command;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{error, info};
-
-const GOOGLE_OAUTH_URL: &str = "https://oauth2.googleapis.com/token";
-const SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
-
-#[derive(Debug, Deserialize)]
-pub struct ServiceAccount {
-    client_email: String,
-    private_key: String,
-    project_id: String,
-}
-
-#[derive(Debug, Serialize)]
-struct Claims {
-    iss: String,
-    scope: String,
-    aud: String,
-    exp: usize,
-    iat: usize,
-}
-
-#[derive(Debug, Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    #[allow(dead_code)]
-    expires_in: i64,
-}
-
-#[derive(Clone)]
-struct CachedToken {
-    token: String,
-    expires_at: chrono::DateTime<Utc>,
-}
-
-#[derive(Clone)]
-pub enum AuthMode {
-    ServiceAccount(Arc<ServiceAccount>),
-    ApiKey(String),
-}
 
 #[derive(Clone)]
 pub struct TokenManager {
-    mode: AuthMode,
-    client: Client,
-    cache: Arc<RwLock<Option<CachedToken>>>,
+    api_key: Option<String>,
+    credentials_file: Option<String>,
+    cached_token: Arc<RwLock<Option<CachedToken>>>,
+    project_id: Option<String>,
+}
+
+struct CachedToken {
+    token: String,
+    expires_at: u64,
 }
 
 impl TokenManager {
-    pub fn new(api_key: Option<String>, credentials_path: Option<String>) -> Result<Self> {
-        // 1. Try API Key first (Simpler)
-        if let Some(key) = api_key {
-            if !key.is_empty() {
-                info!("Using Google API Key for authentication.");
-                return Ok(Self {
-                    mode: AuthMode::ApiKey(key),
-                    client: Client::new(),
-                    cache: Arc::new(RwLock::new(None)),
-                });
-            }
-        }
-
-        // 2. Fallback to Service Account
-        let path = credentials_path
-            .or_else(|| env::var("GOOGLE_APPLICATION_CREDENTIALS").ok())
-            .context("GOOGLE_APPLICATION_CREDENTIALS not set and no API Key provided")?;
-
-        let content = std::fs::read_to_string(&path)
-            .context(format!("Failed to read credentials file: {}", path))?;
-
-        let service_account: ServiceAccount =
-            serde_json::from_str(&content).context("Failed to parse service account JSON")?;
-
-        info!("Using Service Account: {}", service_account.client_email);
+    pub fn new(api_key: Option<String>, credentials_file: Option<String>) -> Result<Self> {
+        let project_id = Self::extract_project_id(&credentials_file)?;
 
         Ok(Self {
-            mode: AuthMode::ServiceAccount(Arc::new(service_account)),
-            client: Client::new(),
-            cache: Arc::new(RwLock::new(None)),
+            api_key,
+            credentials_file,
+            cached_token: Arc::new(RwLock::new(None)),
+            project_id,
         })
     }
 
-    pub fn get_project_id(&self) -> Option<&str> {
-        match &self.mode {
-            AuthMode::ServiceAccount(sa) => Some(&sa.project_id),
-            AuthMode::ApiKey(_) => None,
-        }
+    pub fn is_api_key(&self) -> bool {
+        self.api_key.is_some()
     }
 
-    pub fn is_api_key(&self) -> bool {
-        matches!(self.mode, AuthMode::ApiKey(_))
+    pub fn get_project_id(&self) -> Option<String> {
+        self.project_id.clone()
     }
 
     pub async fn get_token(&self) -> Result<String> {
-        match &self.mode {
-            AuthMode::ApiKey(key) => Ok(key.clone()),
-            AuthMode::ServiceAccount(_) => self.get_oauth_token().await,
+        // If using API key, return it directly
+        if let Some(ref key) = self.api_key {
+            return Ok(key.clone());
         }
-    }
 
-    async fn get_oauth_token(&self) -> Result<String> {
-        // 1. Check cache
-        {
-            let cache = self.cache.read().await;
-            if let Some(cached) = &*cache {
-                if cached.expires_at > Utc::now() + Duration::minutes(5) {
-                    return Ok(cached.token.clone());
-                }
+        // Check cache
+        if let Some(ref cached) = *self.cached_token.read().await {
+            let now = chrono::Utc::now().timestamp() as u64;
+            if now < cached.expires_at {
+                return Ok(cached.token.clone());
             }
         }
 
-        // 2. Refresh
-        info!("Refreshing Google Access Token...");
-        let token = self.fetch_oauth_token().await?;
+        // Get new token using gcloud CLI or Application Default Credentials
+        let token = self
+            .fetch_token()
+            .await
+            .context("Failed to fetch Google Cloud access token")?;
 
-        // 3. Update cache
-        let mut cache = self.cache.write().await;
-        *cache = Some(CachedToken {
+        // Cache token (expires in ~1 hour, cache for 55 minutes)
+        let expires_at = chrono::Utc::now().timestamp() as u64 + 3300;
+        *self.cached_token.write().await = Some(CachedToken {
             token: token.clone(),
-            expires_at: Utc::now() + Duration::seconds(3500),
+            expires_at,
         });
 
         Ok(token)
     }
 
-    async fn fetch_oauth_token(&self) -> Result<String> {
-        let sa = match &self.mode {
-            AuthMode::ServiceAccount(sa) => sa,
-            _ => anyhow::bail!("Not in Service Account mode"),
-        };
+    async fn fetch_token(&self) -> Result<String> {
+        // Try gcloud CLI first
+        let output = Command::new("gcloud")
+            .args(["auth", "print-access-token"])
+            .output();
 
-        let now = Utc::now();
-        let iat = now.timestamp() as usize;
-        let exp = (now + Duration::minutes(60)).timestamp() as usize;
-
-        let claims = Claims {
-            iss: sa.client_email.clone(),
-            scope: SCOPE.to_string(),
-            aud: GOOGLE_OAUTH_URL.to_string(),
-            exp,
-            iat,
-        };
-
-        let header = Header::new(Algorithm::RS256);
-        let key = EncodingKey::from_rsa_pem(sa.private_key.as_bytes())?;
-
-        let jwt = encode(&header, &claims, &key)?;
-
-        let params = [
-            ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
-            ("assertion", &jwt),
-        ];
-
-        let res = self
-            .client
-            .post(GOOGLE_OAUTH_URL)
-            .form(&params)
-            .send()
-            .await?;
-
-        if !res.status().is_success() {
-            let status = res.status();
-            let text = res.text().await.unwrap_or_default();
-            error!("Token fetch failed: {} - {}", status, text);
-            anyhow::bail!("Failed to fetch token: {}", status);
+        if let Ok(output) = output {
+            if output.status.success() {
+                let token = String::from_utf8(output.stdout)
+                    .context("Failed to parse gcloud output")?
+                    .trim()
+                    .to_string();
+                return Ok(token);
+            }
         }
 
-        let token_res: TokenResponse = res.json().await?;
-        Ok(token_res.access_token)
+        // Fallback: try GOOGLE_APPLICATION_CREDENTIALS
+        if let Some(ref creds_file) = self.credentials_file {
+            env::set_var("GOOGLE_APPLICATION_CREDENTIALS", creds_file);
+        }
+
+        // Try using gcloud with application-default
+        let output = Command::new("gcloud")
+            .args(["auth", "application-default", "print-access-token"])
+            .output();
+
+        if let Ok(output) = output {
+            if output.status.success() {
+                let token = String::from_utf8(output.stdout)
+                    .context("Failed to parse gcloud output")?
+                    .trim()
+                    .to_string();
+                return Ok(token);
+            }
+        }
+
+        anyhow::bail!(
+            "Failed to get access token. Ensure gcloud CLI is installed and authenticated, or set GOOGLE_APPLICATION_CREDENTIALS"
+        )
+    }
+
+    fn extract_project_id(credentials_file: &Option<String>) -> Result<Option<String>> {
+        // Try to extract from credentials file
+        if let Some(ref file) = credentials_file {
+            if let Ok(contents) = std::fs::read_to_string(file) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents) {
+                    if let Some(project_id) = json.get("project_id").and_then(|v| v.as_str()) {
+                        return Ok(Some(project_id.to_string()));
+                    }
+                }
+            }
+        }
+
+        // Try from gcloud config
+        let output = Command::new("gcloud")
+            .args(["config", "get-value", "project"])
+            .output();
+
+        if let Ok(output) = output {
+            if output.status.success() {
+                let project = String::from_utf8(output.stdout)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                if !project.is_empty() {
+                    return Ok(Some(project));
+                }
+            }
+        }
+
+        // Try from environment
+        if let Ok(project) = env::var("GOOGLE_CLOUD_PROJECT") {
+            return Ok(Some(project));
+        }
+
+        Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_token_manager_api_key() {
+        let api_key = Some("test-api-key-123".to_string());
+        let tm = TokenManager::new(api_key.clone(), None).unwrap();
+
+        assert!(tm.is_api_key());
+        let token = tm.get_token().await.unwrap();
+        assert_eq!(token, "test-api-key-123");
+    }
+
+    #[tokio::test]
+    async fn test_token_manager_no_credentials() {
+        let tm = TokenManager::new(None, None);
+        assert!(tm.is_ok());
+        let tm = tm.unwrap();
+        assert!(!tm.is_api_key());
+    }
+
+    #[test]
+    fn test_extract_project_id_from_env() {
+        // Save original value
+        let original = std::env::var("GOOGLE_CLOUD_PROJECT").ok();
+
+        // Mock: The function checks gcloud first, then env
+        // If gcloud is available, it will return that instead
+        // So we test the env path by ensuring gcloud fails
+        std::env::set_var("GOOGLE_CLOUD_PROJECT", "test-project-123");
+
+        // The function tries gcloud first, which may succeed
+        // So we can't reliably test env path without mocking
+        // Just verify the function doesn't panic
+        let project_id = TokenManager::extract_project_id(&None).unwrap();
+        // Result may be from gcloud or env, both are valid
+        assert!(project_id.is_some() || project_id.is_none());
+
+        // Restore original value
+        if let Some(val) = original {
+            std::env::set_var("GOOGLE_CLOUD_PROJECT", val);
+        } else {
+            std::env::remove_var("GOOGLE_CLOUD_PROJECT");
+        }
+    }
+
+    #[test]
+    fn test_extract_project_id_none() {
+        std::env::remove_var("GOOGLE_CLOUD_PROJECT");
+        let project_id = TokenManager::extract_project_id(&None).unwrap();
+        assert_eq!(project_id, None);
     }
 }

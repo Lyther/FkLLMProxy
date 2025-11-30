@@ -1,0 +1,16 @@
+# Example .actrc file for local testing with act
+# Copy this to .actrc and uncomment the secrets you want to use
+
+# Docker Hub credentials (for release workflow)
+# -s DOCKER_USERNAME=your-dockerhub-username
+# -s DOCKER_PASSWORD=your-dockerhub-password
+
+# Vertex AI credentials (for E2E tests)
+# -s VERTEX_API_KEY=your-api-key
+# -s GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+# -s GOOGLE_CLOUD_PROJECT=your-project-id
+
+# Usage:
+# 1. Copy this file: cp .actrc.example .actrc
+# 2. Uncomment and fill in the secrets you need
+# 3. Run: act -W .github/workflows/release.yml

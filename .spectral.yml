@@ -1,0 +1,28 @@
+extends: ["spectral:oas"]
+rules:
+  # Ensure all endpoints have descriptions
+  operation-description:
+    description: "Operations must have descriptions"
+    severity: warn
+    given: "$.paths[*][*]"
+    then:
+      field: description
+      function: truthy
+
+  # Ensure all schemas have descriptions
+  schema-description:
+    description: "Schemas should have descriptions"
+    severity: warn
+    given: "$.components.schemas[*]"
+    then:
+      field: description
+      function: truthy
+
+  # Ensure security is defined on protected endpoints
+  operation-security-defined:
+    description: "Operations should define security requirements"
+    severity: warn
+    given: "$.paths[*][*]"
+    then:
+      field: security
+      function: truthy

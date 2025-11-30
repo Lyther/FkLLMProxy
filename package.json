@@ -1,0 +1,17 @@
+{
+    "name": "fkllmproxy-workspace",
+    "private": true,
+    "description": "Root workspace for tooling and scripts",
+    "workspaces": [
+        "bridge",
+        "harvester"
+    ],
+    "scripts": {
+        "prepare": "husky install"
+    },
+    "devDependencies": {
+        "@commitlint/cli": "^18.4.3",
+        "@commitlint/config-conventional": "^18.4.3",
+        "husky": "^8.0.3"
+    }
+}

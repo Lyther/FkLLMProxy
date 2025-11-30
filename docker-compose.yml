@@ -13,7 +13,44 @@ services:
       - APP_VERTEX__REGION=${APP_VERTEX__REGION:-us-central1}
       - GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/sa.json
       - APP_LOG__LEVEL=${APP_LOG__LEVEL:-info}
+      - APP_OPENAI__HARVESTER_URL=http://harvester:3001
+      - APP_ANTHROPIC__BRIDGE_URL=http://anthropic-bridge:4001
     volumes:
-      - ./fkllmproxy-ae517f79b1d1.json:/etc/gcp/sa.json:ro
+      - ${GOOGLE_APPLICATION_CREDENTIALS:-./fkllmproxy-ae517f79b1d1.json}:/etc/gcp/sa.json:ro
+    depends_on:
+      - harvester
+      - anthropic-bridge
+    restart: unless-stopped
+
+  anthropic-bridge:
+    build:
+      context: ./bridge
+      dockerfile: Dockerfile
+    container_name: anthropic-bridge
+    ports:
+      - "4001:4001"
+    environment:
+      - PORT=4001
+      - HOST=0.0.0.0
+      - NODE_ENV=production
+    # Note: Anthropic CLI authentication required
+    # Mount host CLI config if available, or authenticate inside container
+    # volumes:
+    #   - ~/.config/claude:/root/.config/claude:ro
+    restart: unless-stopped
+
+  harvester:
+    build:
+      context: ./harvester
+      dockerfile: Dockerfile
+    container_name: icp-harvester
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - HOST=0.0.0.0
+      - NODE_ENV=production
+    volumes:
+      - ./harvester/cookies.json:/app/cookies.json
     restart: unless-stopped
 

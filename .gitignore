@@ -3,6 +3,14 @@
 **/*.rs.bk
 Cargo.lock
 
+# Node
+node_modules/
+dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
 # Environment & Secrets
 .env
 .env.local
@@ -15,6 +23,11 @@ fkllmproxy-*.json
 logs/
 *.log
 server.log
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
 
 # IDE
 .vscode/
@@ -55,3 +68,4 @@ coverage/
 # Debug files
 *.pdb
 *.dSYM/
+.actrc

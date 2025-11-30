@@ -1,0 +1,189 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fkllmproxy
+  namespace: default
+  labels:
+    app: fkllmproxy
+    component: proxy
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: fkllmproxy
+      component: proxy
+  template:
+    metadata:
+      labels:
+        app: fkllmproxy
+        component: proxy
+    spec:
+      containers:
+        - name: vertex-bridge
+          image: fkllmproxy:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 4000
+              name: http
+              protocol: TCP
+          env:
+            - name: APP_SERVER__HOST
+              value: "0.0.0.0"
+            - name: APP_SERVER__PORT
+              value: "4000"
+            - name: APP_LOG__LEVEL
+              value: "info"
+            - name: APP_LOG__FORMAT
+              value: "json"
+            - name: APP_AUTH__REQUIRE_AUTH
+              value: "true"
+            - name: APP_AUTH__MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: fkllmproxy-secrets
+                  key: master-key
+            - name: APP_VERTEX__PROJECT_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: fkllmproxy-config
+                  key: vertex-project-id
+            - name: APP_VERTEX__REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: fkllmproxy-config
+                  key: vertex-region
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: "/etc/gcp/sa.json"
+            - name: APP_OPENAI__HARVESTER_URL
+              value: "http://fkllmproxy-harvester:3001"
+            - name: APP_ANTHROPIC__BRIDGE_URL
+              value: "http://fkllmproxy-anthropic-bridge:4001"
+          volumeMounts:
+            - name: gcp-credentials
+              mountPath: /etc/gcp
+              readOnly: true
+      volumes:
+        - name: gcp-credentials
+          secret:
+            secretName: fkllmproxy-gcp-credentials
+            resources:
+              requests:
+                memory: "256Mi"
+                cpu: "100m"
+              limits:
+                memory: "512Mi"
+                cpu: "500m"
+            livenessProbe:
+              httpGet:
+                path: /health
+                port: 4000
+              initialDelaySeconds: 30
+              periodSeconds: 10
+              timeoutSeconds: 5
+              failureThreshold: 3
+            readinessProbe:
+              httpGet:
+                path: /health
+                port: 4000
+              initialDelaySeconds: 10
+              periodSeconds: 5
+              timeoutSeconds: 3
+              failureThreshold: 3
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fkllmproxy-harvester
+  namespace: default
+  labels:
+    app: fkllmproxy
+    component: harvester
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fkllmproxy
+      component: harvester
+  template:
+    metadata:
+      labels:
+        app: fkllmproxy
+        component: harvester
+    spec:
+      containers:
+        - name: harvester
+          image: fkllmproxy-harvester:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3001
+              name: http
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "3001"
+            - name: HOST
+              value: "0.0.0.0"
+            - name: NODE_ENV
+              value: "production"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "200m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 60
+            periodSeconds: 30
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fkllmproxy-anthropic-bridge
+  namespace: default
+  labels:
+    app: fkllmproxy
+    component: anthropic-bridge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fkllmproxy
+      component: anthropic-bridge
+  template:
+    metadata:
+      labels:
+        app: fkllmproxy
+        component: anthropic-bridge
+    spec:
+      containers:
+        - name: anthropic-bridge
+          image: fkllmproxy-anthropic-bridge:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 4001
+              name: http
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "4001"
+            - name: HOST
+              value: "0.0.0.0"
+            - name: NODE_ENV
+              value: "production"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 4001
+            initialDelaySeconds: 30
+            periodSeconds: 30

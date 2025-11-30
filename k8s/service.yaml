@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: fkllmproxy
+  namespace: default
+  labels:
+    app: fkllmproxy
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 4000
+      protocol: TCP
+      name: http
+  selector:
+    app: fkllmproxy
+    component: proxy
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fkllmproxy-harvester
+  namespace: default
+  labels:
+    app: fkllmproxy
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3001
+      targetPort: 3001
+      protocol: TCP
+      name: http
+  selector:
+    app: fkllmproxy
+    component: harvester
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fkllmproxy-anthropic-bridge
+  namespace: default
+  labels:
+    app: fkllmproxy
+spec:
+  type: ClusterIP
+  ports:
+    - port: 4001
+      targetPort: 4001
+      protocol: TCP
+      name: http
+  selector:
+    app: fkllmproxy
+    component: anthropic-bridge

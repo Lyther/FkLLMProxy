@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fkllmproxy-config
+  namespace: default
+data:
+  vertex-project-id: "your-project-id"
+  vertex-region: "us-central1"
+  rate-limit-capacity: "1000"
+  rate-limit-refill-per-second: "100"
+  circuit-breaker-failure-threshold: "10"
+  circuit-breaker-timeout-secs: "60"
+  circuit-breaker-success-threshold: "3"
