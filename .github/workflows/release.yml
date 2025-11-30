@@ -22,7 +22,7 @@ jobs:
         with:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build release binaries
+      - name: Build Linux binaries
         run: |
           # Linux x64
           cargo build --release --target x86_64-unknown-linux-gnu
@@ -30,14 +30,6 @@ jobs:
           # Linux ARM64
           rustup target add aarch64-unknown-linux-gnu
           cargo build --release --target aarch64-unknown-linux-gnu
-
-          # macOS x64
-          rustup target add x86_64-apple-darwin
-          cargo build --release --target x86_64-apple-darwin
-
-          # macOS ARM64 (Apple Silicon)
-          rustup target add aarch64-apple-darwin
-          cargo build --release --target aarch64-apple-darwin
 
       - name: Build Node.js bridge
         run: |
@@ -48,7 +40,7 @@ jobs:
           # Package bridge
           tar -czf ../anthropic-bridge-linux-x64.tar.gz dist/ package.json package-lock.json
 
-      - name: Create release archives
+      - name: Create Linux release archives
         run: |
           # Linux x64
           tar -czf vertex-bridge-linux-x64.tar.gz -C target/x86_64-unknown-linux-gnu/release vertex-bridge
@@ -56,11 +48,77 @@ jobs:
           # Linux ARM64
           tar -czf vertex-bridge-linux-arm64.tar.gz -C target/aarch64-unknown-linux-gnu/release vertex-bridge
 
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-binaries
+          path: |
+            vertex-bridge-linux-x64.tar.gz
+            vertex-bridge-linux-arm64.tar.gz
+            anthropic-bridge-linux-x64.tar.gz
+          retention-days: 1
+
+  build-macos:
+    name: Build macOS Binaries
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build macOS binaries
+        run: |
+          # macOS x64
+          cargo build --release --target x86_64-apple-darwin
+
+          # macOS ARM64 (Apple Silicon)
+          cargo build --release --target aarch64-apple-darwin
+
+      - name: Create macOS release archives
+        run: |
           # macOS x64
           tar -czf vertex-bridge-macos-x64.tar.gz -C target/x86_64-apple-darwin/release vertex-bridge
 
           # macOS ARM64
           tar -czf vertex-bridge-macos-arm64.tar.gz -C target/aarch64-apple-darwin/release vertex-bridge
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-binaries
+          path: |
+            vertex-bridge-macos-x64.tar.gz
+            vertex-bridge-macos-arm64.tar.gz
+          retention-days: 1
+
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [release, build-macos]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-binaries
+          path: .
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-binaries
+          path: .
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
