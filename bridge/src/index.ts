@@ -75,12 +75,11 @@ app.post('/anthropic/chat', async (req, res) => {
     // Skip initial output that might contain prompts or UI elements
     if (!hasStarted) {
       // Look for actual response content (usually starts after some setup text)
-      if (cleanText.includes('Assistant:') || cleanText.trim().length > 0) {
+      // Only start when we see "Assistant:" marker to skip setup/prompt text
+      if (cleanText.includes('Assistant:')) {
         hasStarted = true;
-        // Extract content after "Assistant:" if present
-        const content = cleanText.includes('Assistant:')
-          ? cleanText.split('Assistant:').pop()?.trim() || ''
-          : cleanText.trim();
+        // Extract content after "Assistant:" marker
+        const content = cleanText.split('Assistant:').pop()?.trim() || '';
 
         if (content) {
           buffer += content;
