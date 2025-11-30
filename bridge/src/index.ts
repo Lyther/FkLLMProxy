@@ -1,4 +1,3 @@
-import bodyParser from 'body-parser';
 import { spawn } from 'child_process';
 import express from 'express';
 import stripAnsi from 'strip-ansi';
@@ -31,7 +30,7 @@ const app = express();
 const PORT = parseInt(process.env.PORT || '4001', 10); // Different from main proxy port 4000
 const HOST = process.env.HOST || '0.0.0.0'; // Bind to all interfaces for Docker
 
-app.use(bodyParser.json({ limit: '50mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 // Health check endpoint
 app.get('/health', (req, res) => {
