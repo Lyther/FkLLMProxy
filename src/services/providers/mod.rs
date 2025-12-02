@@ -116,8 +116,10 @@ pub fn route_provider(model: &str) -> Provider {
     } else if model.starts_with("claude-") {
         Provider::AnthropicCLI
     } else if model.starts_with("deepseek-") {
+        // DeepSeek provider not yet implemented - will return error via ProviderRegistry
         Provider::DeepSeek
     } else if model.starts_with("ollama-") {
+        // Ollama provider not yet implemented - will return error via ProviderRegistry
         Provider::Ollama
     } else {
         // Default to Vertex for unknown models

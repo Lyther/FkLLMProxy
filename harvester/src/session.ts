@@ -1,18 +1,30 @@
-import { browser } from './browser.js';
 import * as fs from 'fs';
 import * as path from 'path';
+import { browser } from './browser.js';
 
 const COOKIES_FILE = path.join(process.cwd(), 'cookies.json');
+
+interface Cookie {
+  name: string;
+  value: string;
+  domain?: string;
+  path?: string;
+  expires?: number;
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: 'Strict' | 'Lax' | 'None';
+}
 
 let accessToken: string | null = null;
 let sessionValid = false;
 let keepAliveInterval: NodeJS.Timeout | null = null;
 
-function loadCookies(): any[] {
+function loadCookies(): Cookie[] {
   try {
     if (fs.existsSync(COOKIES_FILE)) {
       const data = fs.readFileSync(COOKIES_FILE, 'utf-8');
-      return JSON.parse(data);
+      const parsed = JSON.parse(data);
+      return Array.isArray(parsed) ? parsed : [];
     }
   } catch (error) {
     console.error('Failed to load cookies:', error);
@@ -20,7 +32,7 @@ function loadCookies(): any[] {
   return [];
 }
 
-function saveCookies(cookies: any[]): void {
+function saveCookies(cookies: Cookie[]): void {
   try {
     fs.writeFileSync(COOKIES_FILE, JSON.stringify(cookies, null, 2));
   } catch (error) {

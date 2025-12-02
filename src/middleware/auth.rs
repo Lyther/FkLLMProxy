@@ -101,7 +101,8 @@ mod tests {
 
         AppState {
             config: Arc::new(config.clone()),
-            token_manager: crate::services::auth::TokenManager::new(None, None).unwrap(),
+            token_manager: crate::services::auth::TokenManager::new(None, None)
+                .expect("Failed to initialize TokenManager in test - this should never fail with None, None"),
             provider_registry: Arc::new(crate::services::providers::ProviderRegistry::with_config(
                 Some(config.anthropic.bridge_url.clone()),
             )),

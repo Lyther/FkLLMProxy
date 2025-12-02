@@ -66,6 +66,7 @@ app.post('/anthropic/chat', async (req, res) => {
 
   let buffer = '';
   let hasStarted = false;
+  let preStartBuffer = ''; // Accumulate text before "Assistant:" marker
 
   // Handle stdout
   claude.stdout.on('data', (chunk: Buffer) => {
@@ -74,8 +75,7 @@ app.post('/anthropic/chat', async (req, res) => {
 
     // Skip initial output that might contain prompts or UI elements
     if (!hasStarted) {
-      // Look for actual response content (usually starts after some setup text)
-      // Only start when we see "Assistant:" marker to skip setup/prompt text
+      // Primary: Look for "Assistant:" marker (preferred path)
       if (cleanText.includes('Assistant:')) {
         hasStarted = true;
         // Extract content after "Assistant:" marker
@@ -85,6 +85,23 @@ app.post('/anthropic/chat', async (req, res) => {
           buffer += content;
           sendChunk(content);
         }
+        return;
+      }
+
+      // Fallback: Accumulate pre-start content to detect actual response
+      // If we get substantial content (>50 chars) that doesn't look like setup,
+      // start processing to avoid data loss (handles edge cases where marker is missing)
+      preStartBuffer += cleanText;
+      const trimmed = preStartBuffer.trim();
+
+      // Start if we have substantial content (likely actual response, not just setup text)
+      // This prevents data loss if "Assistant:" marker never appears
+      if (trimmed.length > 50 && !trimmed.toLowerCase().includes('loading') && !trimmed.toLowerCase().includes('please wait')) {
+        hasStarted = true;
+        // Use accumulated content as the start
+        buffer += trimmed;
+        sendChunk(trimmed);
+        preStartBuffer = '';
       }
       return;
     }

@@ -20,9 +20,19 @@ export const arkose = {
 
       const token = await page.evaluate(() => {
         return new Promise<string>((resolve, reject) => {
-          if (typeof window !== 'undefined' && (window as any).arkose) {
+          // page.evaluate() runs in browser context where window exists
+          // Type assertion for browser globals available in evaluate context
+          interface ArkoseAPI {
+            runEnforcement: (callback: (data: { token?: string }) => void) => void;
+          }
+
+          const globalWindow = globalThis as typeof globalThis & {
+            arkose?: ArkoseAPI;
+          };
+
+          if (typeof globalWindow !== 'undefined' && globalWindow.arkose) {
             try {
-              (window as any).arkose.runEnforcement((data: any) => {
+              globalWindow.arkose.runEnforcement((data: { token?: string }) => {
                 if (data.token) {
                   resolve(data.token);
                 } else {

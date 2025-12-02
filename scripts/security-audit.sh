@@ -85,10 +85,13 @@ fi
 
 echo ""
 echo "5. Checking file permissions..."
-if [ -f "fkllmproxy-ae517f79b1d1.json" ] && [ "$(stat -c %a fkllmproxy-ae517f79b1d1.json 2>/dev/null || stat -f %A fkllmproxy-ae517f79b1d1.json 2>/dev/null)" != "600" ]; then
-    echo -e "${YELLOW}⚠️  Credential file permissions should be 600${NC}"
+CRED_FILE="${GOOGLE_APPLICATION_CREDENTIALS:-$HOME/.config/fkllmproxy/service-account.json}"
+if [ -f "$CRED_FILE" ] && [ "$(stat -c %a "$CRED_FILE" 2>/dev/null || stat -f %A "$CRED_FILE" 2>/dev/null)" != "600" ]; then
+    echo -e "${YELLOW}⚠️  Credential file permissions should be 600: $CRED_FILE${NC}"
+elif [ -f "$CRED_FILE" ]; then
+    echo -e "${GREEN}✅ File permissions look correct: $CRED_FILE${NC}"
 else
-    echo -e "${GREEN}✅ File permissions look correct${NC}"
+    echo -e "${YELLOW}⚠️  No credential file found at $CRED_FILE${NC}"
 fi
 
 echo ""

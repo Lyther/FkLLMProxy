@@ -1,26 +1,40 @@
 services:
   vertex-bridge:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: vertex-bridge
     ports:
       - "4000:4000"
     environment:
       - APP_SERVER__HOST=0.0.0.0
       - APP_SERVER__PORT=4000
-      - APP_AUTH__REQUIRE_AUTH=true
+      - APP_AUTH__REQUIRE_AUTH=${APP_AUTH__REQUIRE_AUTH:-true}
       - APP_AUTH__MASTER_KEY=${APP_AUTH__MASTER_KEY:-sk-vertex-bridge-dev}
-      - APP_VERTEX__PROJECT_ID=${APP_VERTEX__PROJECT_ID}
+      - APP_VERTEX__PROJECT_ID=${APP_VERTEX__PROJECT_ID:-}
       - APP_VERTEX__REGION=${APP_VERTEX__REGION:-us-central1}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/sa.json
       - APP_LOG__LEVEL=${APP_LOG__LEVEL:-info}
+      - APP_LOG__FORMAT=${APP_LOG__FORMAT:-pretty}
       - APP_OPENAI__HARVESTER_URL=http://harvester:3001
       - APP_ANTHROPIC__BRIDGE_URL=http://anthropic-bridge:4001
+      - APP_RATE_LIMIT__CAPACITY=${APP_RATE_LIMIT__CAPACITY:-100}
+      - APP_RATE_LIMIT__REFILL_PER_SECOND=${APP_RATE_LIMIT__REFILL_PER_SECOND:-10}
+      - APP_CIRCUIT_BREAKER__FAILURE_THRESHOLD=${APP_CIRCUIT_BREAKER__FAILURE_THRESHOLD:-10}
+      - APP_CIRCUIT_BREAKER__TIMEOUT_SECS=${APP_CIRCUIT_BREAKER__TIMEOUT_SECS:-60}
+      - APP_CIRCUIT_BREAKER__SUCCESS_THRESHOLD=${APP_CIRCUIT_BREAKER__SUCCESS_THRESHOLD:-3}
     volumes:
-      - ${GOOGLE_APPLICATION_CREDENTIALS:-./fkllmproxy-ae517f79b1d1.json}:/etc/gcp/sa.json:ro
+      # Mount service account JSON for Vertex AI auth
+      - ${GOOGLE_APPLICATION_CREDENTIALS:-/dev/null}:/etc/gcp/sa.json:ro
     depends_on:
-      - harvester
-      - anthropic-bridge
+      harvester:
+        condition: service_healthy
+      anthropic-bridge:
+        condition: service_healthy
     restart: unless-stopped
+    networks:
+      - fkllmproxy-network
 
   anthropic-bridge:
     build:
@@ -33,11 +47,19 @@ services:
       - PORT=4001
       - HOST=0.0.0.0
       - NODE_ENV=production
-    # Note: Anthropic CLI authentication required
-    # Mount host CLI config if available, or authenticate inside container
-    # volumes:
-    #   - ~/.config/claude:/root/.config/claude:ro
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - fkllmproxy-network
+    # Note: Anthropic CLI authentication required
+    # Mount host CLI config if available, or authenticate inside container:
+    # volumes:
+    #   - ~/.config/claude:/home/appuser/.config/claude:ro
 
   harvester:
     build:
@@ -51,6 +73,21 @@ services:
       - HOST=0.0.0.0
       - NODE_ENV=production
     volumes:
-      - ./harvester/cookies.json:/app/cookies.json
+      - harvester-cookies:/app/cookies.json
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - fkllmproxy-network
 
+volumes:
+  harvester-cookies:
+    driver: local
+
+networks:
+  fkllmproxy-network:
+    driver: bridge

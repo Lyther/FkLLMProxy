@@ -13,12 +13,12 @@ pub struct FeatureFlags;
 impl FeatureFlags {
     /// Initialize flags from environment variables starting with FLAG_
     pub fn init() {
-        let mut flags = FLAGS.write().unwrap();
+        let mut flags = FLAGS.write().expect("Feature flags lock poisoned - this indicates a serious bug");
         for (key, value) in env::vars() {
             if key.starts_with("FLAG_") {
                 let flag_name = key
                     .strip_prefix("FLAG_")
-                    .unwrap()
+                    .expect("FLAG_ prefix check failed - this should never happen")
                     .to_lowercase()
                     .replace('_', "-");
                 let is_enabled = value.to_lowercase() == "true" || value == "1";
@@ -31,13 +31,13 @@ impl FeatureFlags {
     /// Check if a feature is enabled
     /// Returns false if flag doesn't exist
     pub fn is_enabled(flag: &str) -> bool {
-        let flags = FLAGS.read().unwrap();
+        let flags = FLAGS.read().expect("Feature flags lock poisoned - this indicates a serious bug");
         *flags.get(flag).unwrap_or(&false)
     }
 
     /// Explicitly set a flag (useful for testing or dynamic updates)
     pub fn set(flag: &str, value: bool) {
-        let mut flags = FLAGS.write().unwrap();
+        let mut flags = FLAGS.write().expect("Feature flags lock poisoned - this indicates a serious bug");
         flags.insert(flag.to_string(), value);
         info!("Feature flag updated: {} = {}", flag, value);
     }

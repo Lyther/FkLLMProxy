@@ -382,7 +382,7 @@ mod tests {
                 config.vertex.api_key.clone(),
                 config.vertex.credentials_file.clone(),
             )
-            .unwrap(),
+            .expect("Failed to initialize TokenManager in test - check credentials configuration"),
             provider_registry: Arc::new(ProviderRegistry::with_config(Some(
                 config.anthropic.bridge_url.clone(),
             ))),
@@ -660,7 +660,7 @@ mod tests {
                 config.vertex.api_key.clone(),
                 config.vertex.credentials_file.clone(),
             )
-            .unwrap(),
+            .expect("Failed to initialize TokenManager in test - check credentials configuration"),
             cache: Arc::new(Cache::new(false, 3600)),
             provider_registry: Arc::new(ProviderRegistry::with_config(Some(
                 config.anthropic.bridge_url.clone(),
