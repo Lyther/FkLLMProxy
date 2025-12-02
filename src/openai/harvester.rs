@@ -6,6 +6,13 @@ use std::time::{Duration, SystemTime};
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
+const HARVESTER_TIMEOUT_SECS: u64 = 30;
+const RETRY_ATTEMPTS: u32 = 3;
+const RETRY_BACKOFF_MS: u64 = 500;
+const TOKENS_ENDPOINT: &str = "/tokens";
+const REFRESH_ENDPOINT: &str = "/refresh";
+const HEALTH_ENDPOINT: &str = "/health";
+
 #[derive(Clone)]
 struct CachedToken {
     token: TokenResponse,
@@ -25,7 +32,7 @@ impl HarvesterClient {
     pub fn new(config: &Arc<AppConfig>) -> Result<Self> {
         let base_url = config.openai.harvester_url.clone();
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(HARVESTER_TIMEOUT_SECS))
             .build()
             .context("Failed to create HTTP client")?;
 
@@ -44,13 +51,35 @@ impl HarvesterClient {
         self
     }
 
+    fn calculate_age(cached_at: SystemTime) -> Duration {
+        SystemTime::now()
+            .duration_since(cached_at)
+            .unwrap_or_else(|e| {
+                warn!(
+                    "Clock skew detected: cached_at is in the future by {:?}",
+                    e.duration()
+                );
+                Duration::ZERO
+            })
+    }
+
+    fn build_tokens_url(&self) -> String {
+        format!("{}{}", self.base_url, TOKENS_ENDPOINT)
+    }
+
+    fn build_refresh_url(&self) -> String {
+        format!("{}{}", self.base_url, REFRESH_ENDPOINT)
+    }
+
+    fn build_health_url(&self) -> String {
+        format!("{}{}", self.base_url, HEALTH_ENDPOINT)
+    }
+
     pub async fn get_tokens(&self, require_arkose: bool) -> Result<TokenResponse> {
         let now = SystemTime::now();
 
         if let Some(cached) = self.cache.read().await.as_ref() {
-            let age = now
-                .duration_since(cached.cached_at)
-                .unwrap_or(Duration::ZERO);
+            let age = Self::calculate_age(cached.cached_at);
             let token_ttl = if require_arkose && cached.token.arkose_token.is_some() {
                 self.arkose_token_ttl
             } else {
@@ -70,38 +99,47 @@ impl HarvesterClient {
             m.record_cache_miss().await;
         }
 
-        let url = format!("{}/tokens", self.base_url);
+        let url = self.build_tokens_url();
 
-        for attempt in 1..=3 {
+        for attempt in 1..=RETRY_ATTEMPTS {
             let response = match self.client.get(&url).send().await {
                 Ok(r) => r,
                 Err(e) => {
-                    if attempt == 3 {
-                        anyhow::bail!("Failed to connect to Harvester after 3 attempts: {}", e);
+                    if attempt == RETRY_ATTEMPTS {
+                        anyhow::bail!(
+                            "Failed to connect to Harvester after {} attempts: {}",
+                            RETRY_ATTEMPTS,
+                            e
+                        );
                     }
-                    tokio::time::sleep(Duration::from_millis(500 * attempt as u64)).await;
+                    tokio::time::sleep(Duration::from_millis(RETRY_BACKOFF_MS * attempt as u64))
+                        .await;
                     continue;
                 }
             };
 
             if !response.status().is_success() {
-                if attempt == 3 {
+                if attempt == RETRY_ATTEMPTS {
                     let status = response.status();
-                    let text = response.text().await.unwrap_or_default();
+                    let text = response.text().await.unwrap_or_else(|e| {
+                        warn!("Failed to read error response body: {}", e);
+                        String::new()
+                    });
                     error!("Harvester error: {} - {}", status, text);
                     anyhow::bail!("Harvester returned error: {} - {}", status, text);
                 }
-                tokio::time::sleep(Duration::from_millis(500 * attempt as u64)).await;
+                tokio::time::sleep(Duration::from_millis(RETRY_BACKOFF_MS * attempt as u64)).await;
                 continue;
             }
 
             let token: TokenResponse = match response.json().await {
                 Ok(t) => t,
                 Err(e) => {
-                    if attempt == 3 {
+                    if attempt == RETRY_ATTEMPTS {
                         anyhow::bail!("Failed to parse token response: {}", e);
                     }
-                    tokio::time::sleep(Duration::from_millis(500 * attempt as u64)).await;
+                    tokio::time::sleep(Duration::from_millis(RETRY_BACKOFF_MS * attempt as u64))
+                        .await;
                     continue;
                 }
             };
@@ -120,11 +158,11 @@ impl HarvesterClient {
             return Ok(token);
         }
 
-        anyhow::bail!("Failed to get tokens after 3 attempts");
+        anyhow::bail!("Failed to get tokens after {} attempts", RETRY_ATTEMPTS);
     }
 
     pub async fn refresh_tokens(&self, force_arkose: bool) -> Result<TokenResponse> {
-        let url = format!("{}/refresh", self.base_url);
+        let url = self.build_refresh_url();
         let body = serde_json::json!({
             "force_arkose": force_arkose
         });
@@ -139,7 +177,10 @@ impl HarvesterClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            let text = response.text().await.unwrap_or_default();
+            let text = response.text().await.unwrap_or_else(|e| {
+                warn!("Failed to read error response body: {}", e);
+                String::new()
+            });
             error!("Harvester refresh error: {} - {}", status, text);
             anyhow::bail!("Harvester refresh failed: {} - {}", status, text);
         }
@@ -159,7 +200,7 @@ impl HarvesterClient {
     }
 
     pub async fn health_check(&self) -> Result<HealthResponse> {
-        let url = format!("{}/health", self.base_url);
+        let url = self.build_health_url();
         let response = self
             .client
             .get(&url)

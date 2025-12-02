@@ -176,4 +176,3 @@ async fn test_circuit_breaker_with_provider_routing() {
         );
     }
 }
-

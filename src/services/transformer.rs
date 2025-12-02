@@ -5,8 +5,9 @@ use crate::models::{
     },
     vertex::{Content, GenerateContentRequest, GenerateContentResponse, GenerationConfig, Part},
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::Utc;
+use tracing::warn;
 
 pub fn transform_request(req: ChatCompletionRequest) -> Result<GenerateContentRequest> {
     let contents: Result<Vec<Content>> = req
@@ -16,8 +17,8 @@ pub fn transform_request(req: ChatCompletionRequest) -> Result<GenerateContentRe
             let role = match msg.role {
                 Role::User => "user",
                 Role::Assistant => "model",
-                Role::System => "user", // System messages become user messages in Vertex
-                Role::Tool => "user",   // Tool messages become user messages
+                Role::System => "user",
+                Role::Tool => "user",
             };
 
             Ok(Content {
@@ -42,7 +43,6 @@ pub fn transform_request(req: ChatCompletionRequest) -> Result<GenerateContentRe
         safety_settings: None,
     };
 
-    // Extract system message if present
     if let Some(system_msg) = req.messages.iter().find(|m| matches!(m.role, Role::System)) {
         vertex_req.system_instruction = Some(Content {
             role: "user".to_string(),
@@ -50,11 +50,10 @@ pub fn transform_request(req: ChatCompletionRequest) -> Result<GenerateContentRe
                 text: Some(system_msg.content.clone()),
             }],
         });
-        // Remove system message from contents
-        let system_content = system_msg.content.clone();
+        let system_content = &system_msg.content;
         vertex_req.contents.retain(|c| {
             if let Some(text) = c.parts.first().and_then(|p| p.text.as_ref()) {
-                system_content != *text
+                system_content != text
             } else {
                 true
             }
@@ -73,22 +72,30 @@ pub fn transform_response(
         .candidates
         .as_ref()
         .and_then(|c| c.first())
-        .context("No candidates in Vertex response")?;
+        .ok_or_else(|| anyhow::anyhow!("No candidates in Vertex response"))?;
 
     let content = candidate
         .content
         .as_ref()
         .and_then(|c| c.parts.first())
         .and_then(|p| p.text.as_ref())
-        .context("No content in Vertex response")?
+        .ok_or_else(|| anyhow::anyhow!("No content in Vertex response"))?
         .clone();
 
     let finish_reason = candidate.finish_reason.as_ref().map(|s| s.to_lowercase());
 
-    let usage = vertex_res.usage_metadata.as_ref().map(|u| Usage {
-        prompt_tokens: u.prompt_token_count.unwrap_or(0),
-        completion_tokens: u.candidates_token_count.unwrap_or(0),
-        total_tokens: u.total_token_count.unwrap_or(0),
+    let usage = vertex_res.usage_metadata.as_ref().map(|u| {
+        if u.prompt_token_count.is_none()
+            || u.candidates_token_count.is_none()
+            || u.total_token_count.is_none()
+        {
+            warn!("Vertex response missing token counts - using 0");
+        }
+        Usage {
+            prompt_tokens: u.prompt_token_count.unwrap_or(0),
+            completion_tokens: u.candidates_token_count.unwrap_or(0),
+            total_tokens: u.total_token_count.unwrap_or(0),
+        }
     });
 
     Ok(ChatCompletionResponse {
@@ -118,7 +125,7 @@ pub fn transform_stream_chunk(
         .candidates
         .as_ref()
         .and_then(|c| c.first())
-        .context("No candidates in Vertex response")?;
+        .ok_or_else(|| anyhow::anyhow!("No candidates in Vertex response"))?;
 
     let content = candidate
         .content

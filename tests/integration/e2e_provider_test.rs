@@ -63,7 +63,10 @@ async fn test_vertex_e2e_non_streaming() {
 #[ignore] // Requires real Vertex API credentials
 async fn test_vertex_e2e_streaming() {
     if !has_vertex_credentials() {
-        eprintln!("⏭️  Skipping Vertex E2E streaming test: {}", credential_status());
+        eprintln!(
+            "⏭️  Skipping Vertex E2E streaming test: {}",
+            credential_status()
+        );
         return;
     }
 
@@ -198,6 +201,9 @@ async fn test_e2e_latency_benchmark() {
     eprintln!("⏱️  E2E latency: {}ms", duration.as_millis());
 
     // Assert reasonable latency (should be < 10s for simple request)
-    assert!(duration.as_secs() < 10, "Request took too long: {:?}", duration);
+    assert!(
+        duration.as_secs() < 10,
+        "Request took too long: {:?}",
+        duration
+    );
 }
-
