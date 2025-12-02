@@ -1,0 +1,44 @@
+# k8s/poddisruptionbudget.yaml
+# Ensure minimum availability during voluntary disruptions (upgrades, maintenance)
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: fkllmproxy-pdb
+  namespace: default
+  labels:
+    app: fkllmproxy
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: fkllmproxy
+      component: proxy
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: fkllmproxy-harvester-pdb
+  namespace: default
+  labels:
+    app: fkllmproxy
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: fkllmproxy
+      component: harvester
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: fkllmproxy-anthropic-bridge-pdb
+  namespace: default
+  labels:
+    app: fkllmproxy
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: fkllmproxy
+      component: anthropic-bridge

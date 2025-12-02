@@ -8,6 +8,12 @@ metadata:
     component: proxy
 spec:
   replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: fkllmproxy
@@ -18,10 +24,22 @@ spec:
         app: fkllmproxy
         component: proxy
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: vertex-bridge
           image: fkllmproxy:latest
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
           ports:
             - containerPort: 4000
               name: http
@@ -62,33 +80,38 @@ spec:
             - name: gcp-credentials
               mountPath: /etc/gcp
               readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 4000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 4000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
       volumes:
         - name: gcp-credentials
           secret:
             secretName: fkllmproxy-gcp-credentials
-            resources:
-              requests:
-                memory: "256Mi"
-                cpu: "100m"
-              limits:
-                memory: "512Mi"
-                cpu: "500m"
-            livenessProbe:
-              httpGet:
-                path: /health
-                port: 4000
-              initialDelaySeconds: 30
-              periodSeconds: 10
-              timeoutSeconds: 5
-              failureThreshold: 3
-            readinessProbe:
-              httpGet:
-                path: /health
-                port: 4000
-              initialDelaySeconds: 10
-              periodSeconds: 5
-              timeoutSeconds: 3
-              failureThreshold: 3
+        - name: tmp
+          emptyDir:
+            sizeLimit: 100Mi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -100,6 +123,12 @@ metadata:
     component: harvester
 spec:
   replicas: 1
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: fkllmproxy
@@ -110,10 +139,22 @@ spec:
         app: fkllmproxy
         component: harvester
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: harvester
           image: fkllmproxy-harvester:latest
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
           ports:
             - containerPort: 3001
               name: http
@@ -125,6 +166,16 @@ spec:
               value: "0.0.0.0"
             - name: NODE_ENV
               value: "production"
+            - name: PLAYWRIGHT_BROWSERS_PATH
+              value: "/app/.cache/ms-playwright"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: playwright-cache
+              mountPath: /app/.cache
+            - name: cookies
+              mountPath: /app/cookies.json
+              subPath: cookies.json
           resources:
             requests:
               memory: "512Mi"
@@ -138,6 +189,16 @@ spec:
               port: 3001
             initialDelaySeconds: 60
             periodSeconds: 30
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 100Mi
+        - name: playwright-cache
+          emptyDir:
+            sizeLimit: 500Mi
+        - name: cookies
+          emptyDir:
+            sizeLimit: 1Mi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -149,6 +210,12 @@ metadata:
     component: anthropic-bridge
 spec:
   replicas: 1
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: fkllmproxy
@@ -159,10 +226,22 @@ spec:
         app: fkllmproxy
         component: anthropic-bridge
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: anthropic-bridge
           image: fkllmproxy-anthropic-bridge:latest
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
           ports:
             - containerPort: 4001
               name: http
@@ -174,6 +253,9 @@ spec:
               value: "0.0.0.0"
             - name: NODE_ENV
               value: "production"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           resources:
             requests:
               memory: "128Mi"
@@ -187,3 +269,7 @@ spec:
               port: 4001
             initialDelaySeconds: 30
             periodSeconds: 30
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 100Mi

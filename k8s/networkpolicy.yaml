@@ -1,0 +1,176 @@
+# k8s/networkpolicy.yaml
+# Zero-trust network policy: deny all by default, allow only required traffic
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fkllmproxy-default-deny
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: fkllmproxy
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Allow vertex-bridge to receive traffic from ingress and talk to internal services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fkllmproxy-proxy-policy
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: fkllmproxy
+      component: proxy
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic from ingress controller
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 4000
+    # Allow traffic from same namespace (for health checks)
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 4000
+  egress:
+    # Allow DNS resolution
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Allow traffic to harvester
+    - to:
+        - podSelector:
+            matchLabels:
+              app: fkllmproxy
+              component: harvester
+      ports:
+        - protocol: TCP
+          port: 3001
+    # Allow traffic to anthropic-bridge
+    - to:
+        - podSelector:
+            matchLabels:
+              app: fkllmproxy
+              component: anthropic-bridge
+      ports:
+        - protocol: TCP
+          port: 4001
+    # Allow HTTPS to external APIs (Vertex AI, Google)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# Allow harvester internal traffic only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fkllmproxy-harvester-policy
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: fkllmproxy
+      component: harvester
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Only allow traffic from proxy
+    - from:
+        - podSelector:
+            matchLabels:
+              app: fkllmproxy
+              component: proxy
+      ports:
+        - protocol: TCP
+          port: 3001
+  egress:
+    # Allow DNS resolution
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Allow HTTPS to OpenAI/ChatGPT
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# Allow anthropic-bridge internal traffic only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fkllmproxy-anthropic-bridge-policy
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: fkllmproxy
+      component: anthropic-bridge
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Only allow traffic from proxy
+    - from:
+        - podSelector:
+            matchLabels:
+              app: fkllmproxy
+              component: proxy
+      ports:
+        - protocol: TCP
+          port: 4001
+  egress:
+    # Allow DNS resolution
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Anthropic bridge only needs localhost (claude CLI)
+    # No external egress required

@@ -10,12 +10,6 @@ terraform {
       version = "~> 2.23"
     }
   }
-
-  # Configure remote backend in production
-  # backend "gcs" {
-  #   bucket  = "fkllmproxy-tf-state"
-  #   prefix  = "terraform/state"
-  # }
 }
 
 provider "google" {
