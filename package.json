@@ -1,6 +1,6 @@
 {
     "name": "fkllmproxy-workspace",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "private": true,
     "description": "Root workspace for tooling and scripts",
     "workspaces": [
