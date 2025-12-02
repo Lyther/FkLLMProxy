@@ -6,17 +6,67 @@ use axum::{
 };
 use std::{
     collections::HashMap,
+    net::IpAddr,
     sync::Arc,
     time::{Duration, Instant},
 };
 use tokio::sync::RwLock;
-use tracing::warn;
+use tracing::{error, warn};
+
+const CLEANUP_INTERVAL: Duration = Duration::from_secs(300);
+const MAX_BUCKETS: usize = 10_000;
+const UNKNOWN_KEY: &str = "unknown";
+
+fn is_valid_ip(ip_str: &str) -> bool {
+    ip_str.parse::<IpAddr>().is_ok()
+}
+
+fn extract_client_ip(request: &Request) -> String {
+    if let Some(auth_header) = request
+        .headers()
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+    {
+        return auth_header.to_string();
+    }
+
+    let forwarded_ips = request
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.split(',').map(|ip| ip.trim()).collect::<Vec<_>>());
+
+    if let Some(ref ips) = forwarded_ips {
+        for ip in ips {
+            if is_valid_ip(ip) {
+                return ip.to_string();
+            }
+        }
+        warn!(
+            "x-forwarded-for header contains no valid IP addresses: {:?}",
+            ips
+        );
+    }
+
+    if let Some(remote_addr) = request
+        .headers()
+        .get("x-real-ip")
+        .and_then(|h| h.to_str().ok())
+    {
+        if is_valid_ip(remote_addr) {
+            return remote_addr.to_string();
+        }
+    }
+
+    UNKNOWN_KEY.to_string()
+}
 
 #[derive(Clone)]
 pub struct RateLimiter {
     buckets: Arc<RwLock<HashMap<String, TokenBucket>>>,
     capacity: u32,
     refill_rate: Duration,
+    last_cleanup: Arc<RwLock<Instant>>,
 }
 
 #[derive(Clone)]
@@ -38,10 +88,52 @@ impl RateLimiter {
             buckets: Arc::new(RwLock::new(HashMap::new())),
             capacity,
             refill_rate: Duration::from_secs(1) / refill_per_second,
+            last_cleanup: Arc::new(RwLock::new(Instant::now())),
+        }
+    }
+
+    fn calculate_tokens_to_add(elapsed: Duration, refill_rate: Duration) -> u32 {
+        let elapsed_nanos = elapsed.as_nanos() as u64;
+        let refill_nanos = refill_rate.as_nanos() as u64;
+        if refill_nanos == 0 {
+            return 0;
+        }
+        (elapsed_nanos / refill_nanos) as u32
+    }
+
+    async fn cleanup_if_needed(&self) {
+        let mut last_cleanup = self.last_cleanup.write().await;
+        if last_cleanup.elapsed() >= CLEANUP_INTERVAL {
+            let mut buckets = self.buckets.write().await;
+            let initial_size = buckets.len();
+            let now = Instant::now();
+            let expiration_threshold = CLEANUP_INTERVAL * 2;
+
+            buckets
+                .retain(|_, bucket| now.duration_since(bucket.last_refill) <= expiration_threshold);
+
+            if buckets.len() > MAX_BUCKETS {
+                let to_remove = buckets.len() - MAX_BUCKETS;
+                let keys: Vec<String> = buckets.keys().take(to_remove).cloned().collect();
+                for key in keys {
+                    buckets.remove(&key);
+                }
+                warn!(
+                    "Rate limiter: removed {} buckets to enforce size limit",
+                    to_remove
+                );
+            }
+            *last_cleanup = Instant::now();
+            let removed = initial_size.saturating_sub(buckets.len());
+            if removed > 0 {
+                warn!("Rate limiter cleanup: {} expired buckets removed", removed);
+            }
         }
     }
 
     pub async fn check(&self, key: &str) -> bool {
+        self.cleanup_if_needed().await;
+
         let mut buckets = self.buckets.write().await;
         let bucket = buckets
             .entry(key.to_string())
@@ -52,7 +144,7 @@ impl RateLimiter {
 
         let now = Instant::now();
         let elapsed = now.duration_since(bucket.last_refill);
-        let tokens_to_add = (elapsed.as_secs_f64() / self.refill_rate.as_secs_f64()) as u32;
+        let tokens_to_add = Self::calculate_tokens_to_add(elapsed, self.refill_rate);
 
         if tokens_to_add > 0 {
             bucket.tokens = (bucket.tokens + tokens_to_add).min(self.capacity);
@@ -76,13 +168,17 @@ impl RateLimiter {
 
         let now = Instant::now();
         let elapsed = now.duration_since(bucket.last_refill);
-        let tokens_to_add = (elapsed.as_secs_f64() / self.refill_rate.as_secs_f64()) as u32;
+        let tokens_to_add = Self::calculate_tokens_to_add(elapsed, self.refill_rate);
         let current_tokens = (bucket.tokens + tokens_to_add).min(self.capacity);
 
-        // Calculate reset time (when bucket will be full)
         let tokens_needed = self.capacity.saturating_sub(current_tokens);
         let reset_seconds = if tokens_needed > 0 {
-            (tokens_needed as f64 * self.refill_rate.as_secs_f64()).ceil() as u64
+            let refill_nanos = self.refill_rate.as_nanos() as u64;
+            if refill_nanos == 0 {
+                0
+            } else {
+                (tokens_needed as u64 * refill_nanos) / 1_000_000_000
+            }
         } else {
             0
         };
@@ -95,34 +191,40 @@ impl RateLimiter {
     }
 }
 
+fn build_rate_limit_headers(
+    info: &RateLimitInfo,
+) -> Result<Vec<(axum::http::HeaderName, axum::http::HeaderValue)>, String> {
+    let limit_header = axum::http::HeaderValue::from_str(&info.limit.to_string())
+        .map_err(|e| format!("Failed to construct X-RateLimit-Limit header: {}", e))?;
+
+    let remaining_header = axum::http::HeaderValue::from_str(&info.remaining.to_string())
+        .map_err(|e| format!("Failed to construct X-RateLimit-Remaining header: {}", e))?;
+
+    let reset_header = axum::http::HeaderValue::from_str(&info.reset.to_string())
+        .map_err(|e| format!("Failed to construct X-RateLimit-Reset header: {}", e))?;
+
+    Ok(vec![
+        (
+            axum::http::header::HeaderName::from_static("x-ratelimit-limit"),
+            limit_header,
+        ),
+        (
+            axum::http::header::HeaderName::from_static("x-ratelimit-remaining"),
+            remaining_header,
+        ),
+        (
+            axum::http::header::HeaderName::from_static("x-ratelimit-reset"),
+            reset_header,
+        ),
+    ])
+}
+
 pub async fn rate_limit_middleware(
     State(limiter): State<RateLimiter>,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    // Rate limit key: Use authorization header if present, otherwise use connection IP
-    // SECURITY: x-forwarded-for can be spoofed, so we only use it as fallback
-    // In production behind a trusted proxy, extract real IP from trusted headers
-    let key = request
-        .headers()
-        .get("authorization")
-        .and_then(|h| h.to_str().ok())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            // Extract IP from connection or x-forwarded-for
-            // Note: In production, validate x-forwarded-for against trusted proxy list
-            let forwarded = request
-                .headers()
-                .get("x-forwarded-for")
-                .and_then(|h| h.to_str().ok())
-                .and_then(|s| s.split(',').next())
-                .map(|s| s.trim().to_string());
-
-            // Use connection remote_addr if available (requires extension)
-            // For now, use x-forwarded-for with warning that it's spoofable
-            forwarded.unwrap_or_else(|| "unknown".to_string())
-        });
-
+    let key = extract_client_ip(&request);
     let info = limiter.get_info(&key).await;
 
     if !limiter.check(&key).await {
@@ -135,49 +237,127 @@ pub async fn rate_limit_middleware(
             }
         })
         .to_string();
-        let response = Response::builder()
+
+        let mut response_builder = Response::builder()
             .status(StatusCode::TOO_MANY_REQUESTS)
-            .header("X-RateLimit-Limit", info.limit.to_string())
-            .header("X-RateLimit-Remaining", "0")
-            .header("X-RateLimit-Reset", info.reset.to_string())
-            .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .body(error_body.into())
-            .map_err(|e| {
-                warn!("Failed to build rate limit response: {}", e);
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+            .header(axum::http::header::CONTENT_TYPE, "application/json");
+
+        match build_rate_limit_headers(&info) {
+            Ok(headers) => {
+                for (name, value) in headers {
+                    response_builder = response_builder.header(name, value);
+                }
+            }
+            Err(e) => {
+                error!("Failed to build rate limit headers: {}", e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+
+        let response = response_builder.body(error_body.into()).map_err(|e| {
+            error!("Failed to build rate limit response: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
         return Ok(response);
     }
 
     let mut response = next.run(request).await;
 
-    // Header construction can fail with invalid characters, but rate limit values are numeric
-    // Log warning but don't fail the request if header construction fails
-    if let Ok(header_value) = axum::http::HeaderValue::from_str(&info.limit.to_string()) {
-        response
-            .headers_mut()
-            .insert("X-RateLimit-Limit", header_value);
-    } else {
-        warn!("Failed to construct X-RateLimit-Limit header");
-    }
-
-    if let Ok(header_value) =
-        axum::http::HeaderValue::from_str(&info.remaining.saturating_sub(1).to_string())
-    {
-        response
-            .headers_mut()
-            .insert("X-RateLimit-Remaining", header_value);
-    } else {
-        warn!("Failed to construct X-RateLimit-Remaining header");
-    }
-
-    if let Ok(header_value) = axum::http::HeaderValue::from_str(&info.reset.to_string()) {
-        response
-            .headers_mut()
-            .insert("X-RateLimit-Reset", header_value);
-    } else {
-        warn!("Failed to construct X-RateLimit-Reset header");
+    match build_rate_limit_headers(&info) {
+        Ok(headers) => {
+            for (name, value) in headers {
+                response.headers_mut().insert(name, value);
+            }
+        }
+        Err(e) => {
+            error!("Failed to build rate limit headers: {}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
     }
 
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_valid_ip() {
+        assert!(is_valid_ip("127.0.0.1"));
+        assert!(is_valid_ip("::1"));
+        assert!(is_valid_ip("192.168.1.1"));
+        assert!(!is_valid_ip("invalid"));
+        assert!(!is_valid_ip("not.an.ip"));
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_check() {
+        let limiter = RateLimiter::new(10, 5);
+        let key = "test-key";
+
+        for _ in 0..10 {
+            assert!(limiter.check(key).await);
+        }
+
+        assert!(!limiter.check(key).await);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_refill() {
+        let limiter = RateLimiter::new(10, 10);
+        let key = "test-key";
+
+        for _ in 0..10 {
+            assert!(limiter.check(key).await);
+        }
+
+        assert!(!limiter.check(key).await);
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        assert!(limiter.check(key).await);
+    }
+
+    #[test]
+    fn test_build_rate_limit_headers() {
+        let info = RateLimitInfo {
+            limit: 100,
+            remaining: 50,
+            reset: 1234567890,
+        };
+
+        let headers = build_rate_limit_headers(&info).unwrap();
+        assert_eq!(headers.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_cleanup_expires_buckets() {
+        let limiter = RateLimiter::new(10, 5);
+
+        limiter.check("key1").await;
+        limiter.check("key2").await;
+        limiter.check("key3").await;
+
+        let buckets = limiter.buckets.read().await;
+        assert_eq!(buckets.len(), 3);
+        drop(buckets);
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let mut last_cleanup = limiter.last_cleanup.write().await;
+        *last_cleanup = Instant::now() - CLEANUP_INTERVAL - Duration::from_secs(1);
+        drop(last_cleanup);
+
+        let mut buckets = limiter.buckets.write().await;
+        for (_, bucket) in buckets.iter_mut() {
+            bucket.last_refill = Instant::now() - CLEANUP_INTERVAL * 3;
+        }
+        drop(buckets);
+
+        limiter.cleanup_if_needed().await;
+
+        let buckets = limiter.buckets.read().await;
+        assert_eq!(buckets.len(), 0, "Expired buckets should be removed");
+    }
 }

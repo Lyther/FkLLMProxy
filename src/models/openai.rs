@@ -13,12 +13,11 @@ pub enum Role {
 pub struct ChatMessage {
     pub role: Role,
     #[serde(deserialize_with = "deserialize_content")]
-    pub content: String, // Simplifying for now, handling array content later if needed
+    pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
 
-// Helper to handle both string and array content (taking just string for now)
 fn deserialize_content<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -27,17 +26,27 @@ where
     #[serde(untagged)]
     enum Content {
         String(String),
-        Array(Vec<serde_json::Value>), // We'll just debug print array for now or join it
+        Array(Vec<serde_json::Value>),
     }
 
     let content = Content::deserialize(deserializer)?;
     match content {
         Content::String(s) => Ok(s),
-        Content::Array(arr) => Ok(serde_json::to_string(&arr).unwrap_or_default()),
+        Content::Array(arr) => {
+            let parts: Vec<String> = arr
+                .into_iter()
+                .filter_map(|v| {
+                    v.get("text")
+                        .and_then(|t| t.as_str())
+                        .map(|s| s.to_string())
+                        .or_else(|| v.as_str().map(|s| s.to_string()))
+                })
+                .collect();
+            Ok(parts.join("\n"))
+        }
     }
 }
 
-// Helper to handle both string and array stop sequences
 fn deserialize_stop<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -76,6 +85,7 @@ pub struct ChatCompletionRequest {
 fn default_temperature() -> f32 {
     1.0
 }
+
 fn default_top_p() -> f32 {
     1.0
 }
@@ -104,7 +114,6 @@ pub struct Usage {
     pub total_tokens: u32,
 }
 
-// Streaming Chunks
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatCompletionChunk {
     pub id: String,
@@ -167,5 +176,15 @@ mod tests {
         }"#;
         let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.stop, None);
+    }
+
+    #[test]
+    fn test_deserialize_content_array() {
+        let json = r#"{
+            "role": "user",
+            "content": [{"type": "text", "text": "hello"}, {"type": "text", "text": "world"}]
+        }"#;
+        let msg: ChatMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.content, "hello\nworld");
     }
 }

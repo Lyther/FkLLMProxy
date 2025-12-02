@@ -97,16 +97,10 @@ pub async fn openai_chat_completions(
             Ok(r) => r,
             Err(e) => {
                 error!("Backend request failed: {}", e);
-                let status = if e.to_string().contains("401") {
-                    401
-                } else if e.to_string().contains("403") {
+                let status = e.status_code();
+                if status == 403 {
                     state.metrics.record_waf_block().await;
-                    403
-                } else if e.to_string().contains("429") {
-                    429
-                } else {
-                    502
-                };
+                }
                 state.metrics.record_request(false).await;
                 return map_backend_error(status, &e.to_string());
             }
@@ -140,9 +134,19 @@ pub async fn openai_chat_completions(
                 }
                 Err(e) => {
                     error!("Stream error: {}", e);
-                    Ok::<Event, Infallible>(
-                        Event::default().comment(format!("stream-error: {}", e)),
-                    )
+                    let error_chunk = serde_json::json!({
+                        "error": {
+                            "message": format!("Stream error: {}", e),
+                            "type": "stream_error",
+                            "code": "stream_failed"
+                        }
+                    });
+                    match Event::default().json_data(error_chunk) {
+                        Ok(event) => Ok(event),
+                        Err(_) => {
+                            Ok(Event::default().comment(format!("error: stream failed: {}", e)))
+                        }
+                    }
                 }
             });
 
@@ -171,16 +175,10 @@ pub async fn openai_chat_completions(
         Ok(r) => r,
         Err(e) => {
             error!("Backend request failed: {}", e);
-            let status = if e.to_string().contains("401") {
-                401
-            } else if e.to_string().contains("403") {
+            let status = e.status_code();
+            if status == 403 {
                 state.metrics.record_waf_block().await;
-                403
-            } else if e.to_string().contains("429") {
-                429
-            } else {
-                502
-            };
+            }
             state.metrics.record_request(false).await;
             return map_backend_error(status, &e.to_string());
         }

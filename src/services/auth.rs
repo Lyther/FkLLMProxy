@@ -1,8 +1,10 @@
 use anyhow::{Context, Result};
-use std::env;
-use std::process::Command;
 use std::sync::Arc;
+use tokio::process::Command;
 use tokio::sync::RwLock;
+use tracing::warn;
+
+const TOKEN_CACHE_TTL_SECS: u64 = 3300;
 
 #[derive(Clone)]
 pub struct TokenManager {
@@ -33,17 +35,15 @@ impl TokenManager {
         self.api_key.is_some()
     }
 
-    pub fn get_project_id(&self) -> Option<String> {
-        self.project_id.clone()
+    pub fn get_project_id(&self) -> Option<&str> {
+        self.project_id.as_deref()
     }
 
     pub async fn get_token(&self) -> Result<String> {
-        // If using API key, return it directly
-        if let Some(ref key) = self.api_key {
+        if let Some(key) = &self.api_key {
             return Ok(key.clone());
         }
 
-        // Check cache
         if let Some(ref cached) = *self.cached_token.read().await {
             let now = chrono::Utc::now().timestamp() as u64;
             if now < cached.expires_at {
@@ -51,14 +51,12 @@ impl TokenManager {
             }
         }
 
-        // Get new token using gcloud CLI or Application Default Credentials
         let token = self
             .fetch_token()
             .await
             .context("Failed to fetch Google Cloud access token")?;
 
-        // Cache token (expires in ~1 hour, cache for 55 minutes)
-        let expires_at = chrono::Utc::now().timestamp() as u64 + 3300;
+        let expires_at = chrono::Utc::now().timestamp() as u64 + TOKEN_CACHE_TTL_SECS;
         *self.cached_token.write().await = Some(CachedToken {
             token: token.clone(),
             expires_at,
@@ -68,39 +66,38 @@ impl TokenManager {
     }
 
     async fn fetch_token(&self) -> Result<String> {
-        // Try gcloud CLI first
         let output = Command::new("gcloud")
             .args(["auth", "print-access-token"])
-            .output();
+            .output()
+            .await
+            .context("Failed to execute gcloud command")?;
 
-        if let Ok(output) = output {
-            if output.status.success() {
-                let token = String::from_utf8(output.stdout)
-                    .context("Failed to parse gcloud output")?
-                    .trim()
-                    .to_string();
-                return Ok(token);
-            }
+        if output.status.success() {
+            let token = String::from_utf8(output.stdout)
+                .context("Failed to parse gcloud output as UTF-8")?
+                .trim()
+                .to_string();
+            return Ok(token);
         }
 
-        // Fallback: try GOOGLE_APPLICATION_CREDENTIALS
+        let mut cmd = Command::new("gcloud");
+        cmd.args(["auth", "application-default", "print-access-token"]);
+
         if let Some(ref creds_file) = self.credentials_file {
-            env::set_var("GOOGLE_APPLICATION_CREDENTIALS", creds_file);
+            cmd.env("GOOGLE_APPLICATION_CREDENTIALS", creds_file);
         }
 
-        // Try using gcloud with application-default
-        let output = Command::new("gcloud")
-            .args(["auth", "application-default", "print-access-token"])
-            .output();
+        let output = cmd
+            .output()
+            .await
+            .context("Failed to execute gcloud application-default command")?;
 
-        if let Ok(output) = output {
-            if output.status.success() {
-                let token = String::from_utf8(output.stdout)
-                    .context("Failed to parse gcloud output")?
-                    .trim()
-                    .to_string();
-                return Ok(token);
-            }
+        if output.status.success() {
+            let token = String::from_utf8(output.stdout)
+                .context("Failed to parse gcloud output as UTF-8")?
+                .trim()
+                .to_string();
+            return Ok(token);
         }
 
         anyhow::bail!(
@@ -109,7 +106,6 @@ impl TokenManager {
     }
 
     fn extract_project_id(credentials_file: &Option<String>) -> Result<Option<String>> {
-        // Try to extract from credentials file
         if let Some(ref file) = credentials_file {
             if let Ok(contents) = std::fs::read_to_string(file) {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents) {
@@ -120,25 +116,27 @@ impl TokenManager {
             }
         }
 
-        // Try from gcloud config
-        let output = Command::new("gcloud")
+        let output = std::process::Command::new("gcloud")
             .args(["config", "get-value", "project"])
             .output();
 
         if let Ok(output) = output {
             if output.status.success() {
-                let project = String::from_utf8(output.stdout)
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
-                if !project.is_empty() {
-                    return Ok(Some(project));
+                match String::from_utf8(output.stdout) {
+                    Ok(project) => {
+                        let project = project.trim().to_string();
+                        if !project.is_empty() {
+                            return Ok(Some(project));
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to parse gcloud project output as UTF-8: {}", e);
+                    }
                 }
             }
         }
 
-        // Try from environment
-        if let Ok(project) = env::var("GOOGLE_CLOUD_PROJECT") {
+        if let Ok(project) = std::env::var("GOOGLE_CLOUD_PROJECT") {
             return Ok(Some(project));
         }
 
@@ -170,32 +168,34 @@ mod tests {
 
     #[test]
     fn test_extract_project_id_from_env() {
-        // Save original value
         let original = std::env::var("GOOGLE_CLOUD_PROJECT").ok();
 
-        // Mock: The function checks gcloud first, then env
-        // If gcloud is available, it will return that instead
-        // So we test the env path by ensuring gcloud fails
-        std::env::set_var("GOOGLE_CLOUD_PROJECT", "test-project-123");
+        unsafe {
+            std::env::set_var("GOOGLE_CLOUD_PROJECT", "test-project-123");
+        }
 
-        // The function tries gcloud first, which may succeed
-        // So we can't reliably test env path without mocking
-        // Just verify the function doesn't panic
         let project_id = TokenManager::extract_project_id(&None).unwrap();
-        // Result may be from gcloud or env, both are valid
-        assert!(project_id.is_some() || project_id.is_none());
+        // gcloud CLI may override env var, so we check the value if present
+        if let Some(ref id) = project_id {
+            assert!(!id.is_empty(), "Project ID should not be empty if present");
+        }
 
-        // Restore original value
         if let Some(val) = original {
-            std::env::set_var("GOOGLE_CLOUD_PROJECT", val);
+            unsafe {
+                std::env::set_var("GOOGLE_CLOUD_PROJECT", val);
+            }
         } else {
-            std::env::remove_var("GOOGLE_CLOUD_PROJECT");
+            unsafe {
+                std::env::remove_var("GOOGLE_CLOUD_PROJECT");
+            }
         }
     }
 
     #[test]
     fn test_extract_project_id_none() {
-        std::env::remove_var("GOOGLE_CLOUD_PROJECT");
+        unsafe {
+            std::env::remove_var("GOOGLE_CLOUD_PROJECT");
+        }
         let project_id = TokenManager::extract_project_id(&None).unwrap();
         assert_eq!(project_id, None);
     }
