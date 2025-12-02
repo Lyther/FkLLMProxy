@@ -1,5 +1,6 @@
 # Multi-stage build for harvester (Node.js/TypeScript with Playwright)
-FROM node:20.11-bookworm-slim AS builder
+# Pinned by digest for security
+FROM node@sha256:357deca6eb61149534d32faaf5e4b2e4fa3549c2be610ee1019bf340ea8c51ec AS builder
 
 WORKDIR /app
 
@@ -27,7 +28,8 @@ COPY src ./src
 RUN npm run build
 
 # Runtime image
-FROM node:20.11-bookworm-slim AS runner
+# Pinned by digest for security
+FROM node@sha256:357deca6eb61149534d32faaf5e4b2e4fa3549c2be610ee1019bf340ea8c51ec AS runner
 
 WORKDIR /app
 
@@ -45,15 +47,17 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/node_modules ./node_modules
 
-# Install Playwright browsers using the version from node_modules (not npx latest)
-RUN ./node_modules/.bin/playwright install chromium --with-deps || npx playwright install chromium --with-deps || true
-
 # Use existing node user (UID/GID 1000) - Debian node image already has it
 # Ensure /app and browser cache are owned by node user
 RUN mkdir -p /app/.cache/ms-playwright && \
     chown -R node:node /app
 
+# Switch to non-root user before installing Playwright
 USER node
+
+# Install Playwright browsers using the version from node_modules (not npx latest)
+# Running as non-root user (security hardening)
+RUN ./node_modules/.bin/playwright install chromium --with-deps || npx playwright install chromium --with-deps || true
 
 EXPOSE 3001
 

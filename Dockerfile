@@ -1,5 +1,6 @@
 # Multi-stage build for vertex-bridge (Rust)
-FROM rust:1.83-bookworm AS builder
+# Pinned by digest for security
+FROM rust@sha256:a45bf1f5d9af0a23b26703b3500d70af1abff7f984a7abef5a104b42c02a292b AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -17,7 +18,8 @@ COPY src ./src
 RUN cargo build --release
 
 # Runtime image
-FROM debian:12-slim
+# Pinned by digest for security
+FROM debian@sha256:b4aa902587c2e61ce789849cb54c332b0400fe27b1ee33af4669e1f7e7c3e22f
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \

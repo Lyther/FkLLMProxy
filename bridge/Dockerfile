@@ -1,5 +1,6 @@
 # Multi-stage build for anthropic-bridge (Node.js/TypeScript)
-FROM node:20.11-alpine3.19 AS builder
+# Pinned by digest for security
+FROM node@sha256:bf77dc26e48ea95fca9d1aceb5acfa69d2e546b765ec2abfb502975f1a2d4def AS builder
 
 WORKDIR /app
 
@@ -13,9 +14,9 @@ RUN apk add --no-cache \
 COPY package.json package-lock.json* tsconfig.json ./
 # Regenerate lock file if missing or use npm install as fallback for out-of-sync lock files
 RUN if [ -f package-lock.json ]; then \
-      npm ci || (echo "Lock file out of sync, regenerating..." && rm -f package-lock.json && npm install); \
+    npm ci || (echo "Lock file out of sync, regenerating..." && rm -f package-lock.json && npm install); \
     else \
-      npm install; \
+    npm install; \
     fi
 
 # Copy source files
@@ -25,7 +26,8 @@ COPY src ./src
 RUN npm run build
 
 # Runtime image
-FROM node:20.11-alpine3.19 AS runner
+# Pinned by digest for security
+FROM node@sha256:bf77dc26e48ea95fca9d1aceb5acfa69d2e546b765ec2abfb502975f1a2d4def AS runner
 
 WORKDIR /app
 
