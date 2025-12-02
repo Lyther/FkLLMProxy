@@ -1,4 +1,4 @@
-.PHONY: setup up down clean logs test health
+.PHONY: setup up down clean logs test test-unit test-integration lint format audit verify health build rebuild ps deploy rollback
 
 # Default target
 .DEFAULT_GOAL := help
@@ -82,6 +82,26 @@ health: ## Check health status of all services
 test: ## Run Rust tests
 	cargo test
 
+test-unit: ## Run unit tests only (fast)
+	cargo test --lib
+
+test-integration: ## Run integration tests
+	cargo test --test integration
+
+lint: ## Run all linters
+	cargo fmt --check
+	cargo clippy -- -D warnings
+
+format: ## Format all code
+	cargo fmt
+
+audit: ## Run security audit
+	cargo audit || cargo install cargo-audit && cargo audit
+	@echo "Checking for secrets..."
+	@command -v gitleaks >/dev/null 2>&1 && gitleaks detect --source . --no-git --redact || echo "Install gitleaks for secret scanning"
+
+verify: lint test audit ## Run full verification suite (lint + test + audit)
+
 build: ## Build all Docker images
 	docker-compose build
 
@@ -90,4 +110,12 @@ rebuild: ## Rebuild all Docker images without cache
 
 ps: ## Show running containers
 	docker-compose ps
+
+# Deployment targets (Kubernetes)
+deploy: ## Deploy to Kubernetes (usage: make deploy VERSION=v1.2.3 ENV=staging)
+	@if [ -z "$(VERSION)" ]; then echo "$(RED)ERROR: VERSION required (e.g., make deploy VERSION=v1.2.3)$(NC)"; exit 1; fi
+	./scripts/deploy.sh $(VERSION) $(ENV)
+
+rollback: ## Emergency rollback to previous deployment
+	./scripts/rollback.sh
 
