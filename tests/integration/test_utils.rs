@@ -105,8 +105,6 @@ impl TestServer {
                 harvester_url: "http://localhost:3001".to_string(),
                 access_token_ttl_secs: 3600,
                 arkose_token_ttl_secs: 120,
-                tls_fingerprint_enabled: false,
-                tls_fingerprint_target: "chrome120".to_string(),
             },
             anthropic: AnthropicConfig {
                 bridge_url: "http://localhost:4001".to_string(),
