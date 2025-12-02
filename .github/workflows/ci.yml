@@ -1,267 +1,265 @@
 name: CI
 
 on:
-  push:
-    branches: [main, develop]
-  pull_request:
-    branches: [main]
+    push:
+        branches: [main, develop]
+    pull_request:
+        branches: [main]
 
 # Cancel in-progress runs for the same ref
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
 
 jobs:
-  # Job 1: Fast checks (< 2 min) - Fail Fast
-  lint:
-    name: Lint & Type Check
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Job 1: Fast checks (< 2 min) - Fail Fast
+    lint:
+        name: Lint & Type Check
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  components: rustfmt, clippy
 
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+            - name: Cache dependencies
+              uses: Swatinem/rust-cache@v2
+              with:
+                  key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+            - name: Check formatting
+              run: cargo fmt --all -- --check
 
-      - name: Run clippy
-        run: cargo clippy -- -D warnings
+            - name: Run clippy
+              run: cargo clippy -- -D warnings
 
-      - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
+            - name: Install cargo-deny
+              run: cargo install cargo-deny --locked
 
-      - name: Check licenses (Rust)
-        run: cargo-deny check licenses
+            - name: Check licenses (Rust)
+              run: cargo-deny check licenses
 
-      - name: Setup Node.js for OpenAPI validation
-        uses: actions/setup-node@v4
-        with:
-          node-version: "18"
+            - name: Setup Node.js for OpenAPI validation
+              uses: actions/setup-node@v4
+              with:
+                  node-version: "18"
 
-      - name: Check licenses (Node.js - Harvester)
-        working-directory: harvester
-        run: npx license-checker --summary
+            - name: Check licenses (Node.js - Harvester)
+              working-directory: harvester
+              run: npx license-checker --summary
 
-      - name: Check licenses (Node.js - Bridge)
-        working-directory: bridge
-        run: npx license-checker --summary
+            - name: Check licenses (Node.js - Bridge)
+              working-directory: bridge
+              run: npx license-checker --summary
 
-      - name: Install OpenAPI validation tools
-        run: |
-          npm install -g @stoplight/spectral-cli
-          npm install -g openapi-diff || true
+            - name: Install OpenAPI validation tools
+              run: |
+                  npm install -g @stoplight/spectral-cli
+                  npm install -g openapi-diff || true
 
-      - name: Validate OpenAPI specification
-        run: |
-          chmod +x scripts/validate-openapi.sh
-          ./scripts/validate-openapi.sh
+            - name: Validate OpenAPI specification
+              run: |
+                  chmod +x scripts/validate-openapi.sh
+                  ./scripts/validate-openapi.sh
 
-      - name: Install gitleaks
-        run: |
-          wget -q https://github.com/gitleaks/gitleaks/releases/download/v8.18.0/gitleaks_8.18.0_linux_x64.tar.gz
-          tar -xzf gitleaks_8.18.0_linux_x64.tar.gz
-          sudo mv gitleaks /usr/local/bin/
-          rm gitleaks_8.18.0_linux_x64.tar.gz
+            - name: Install gitleaks
+              run: |
+                  wget -q https://github.com/gitleaks/gitleaks/releases/download/v8.18.0/gitleaks_8.18.0_linux_x64.tar.gz
+                  tar -xzf gitleaks_8.18.0_linux_x64.tar.gz
+                  sudo mv gitleaks /usr/local/bin/
+                  rm gitleaks_8.18.0_linux_x64.tar.gz
 
-      - name: Scan for secrets
-        run: |
-          gitleaks detect --source . --verbose --no-git || true
-          # Note: Using || true to not fail CI on warnings, but log them
+            - name: Scan for secrets
+              run: gitleaks detect --source . --verbose --no-git --redact --config .gitleaks.toml
 
-  # Job 2: Unit tests (< 3 min) - Fast feedback
-  test-unit:
-    name: Unit Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Job 2: Unit tests (< 3 min) - Fast feedback
+    test-unit:
+        name: Unit Tests
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+            - name: Cache dependencies
+              uses: Swatinem/rust-cache@v2
+              with:
+                  key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run unit tests
-        run: cargo test --lib -- --nocapture
-        env:
-          RUST_BACKTRACE: 1
+            - name: Run unit tests
+              run: cargo test --lib -- --nocapture
+              env:
+                  RUST_BACKTRACE: 1
 
-  # Job 3: Integration tests (< 5 min) - Critical path
-  test-integration:
-    name: Integration Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    needs: [lint, test-unit]
+    # Job 3: Integration tests (< 5 min) - Critical path
+    test-integration:
+        name: Integration Tests
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        needs: [lint, test-unit]
 
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+        services:
+            redis:
+                image: redis:7-alpine
+                ports:
+                    - 6379:6379
+                options: >-
+                    --health-cmd "redis-cli ping"
+                    --health-interval 10s
+                    --health-timeout 5s
+                    --health-retries 5
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+            - name: Cache dependencies
+              uses: Swatinem/rust-cache@v2
+              with:
+                  key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run smoke tests (@smoke)
-        run: cargo test --test integration smoke_ -- --nocapture
-        env:
-          RUST_BACKTRACE: 1
+            - name: Run smoke tests (@smoke)
+              run: cargo test --test integration smoke_ -- --nocapture
+              env:
+                  RUST_BACKTRACE: 1
 
-      - name: Run critical integration tests (@critical)
-        run: cargo test --test integration -- --nocapture
-        env:
-          RUST_BACKTRACE: 1
+            - name: Run critical integration tests (@critical)
+              run: cargo test --test integration -- --nocapture
+              env:
+                  RUST_BACKTRACE: 1
 
-  # Job 4: E2E tests (conditional, can run in parallel)
-  test-e2e:
-    name: E2E Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    needs: [lint, test-unit]
+    # Job 4: E2E tests (conditional, can run in parallel)
+    test-e2e:
+        name: E2E Tests
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+        needs: [lint, test-unit]
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+            - name: Cache dependencies
+              uses: Swatinem/rust-cache@v2
+              with:
+                  key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run E2E tests with credentials
-        run: |
-          if [ -z "$VERTEX_API_KEY" ] && [ -z "$GOOGLE_APPLICATION_CREDENTIALS" ]; then
-            echo "⚠️  Skipping E2E tests - no credentials available"
-            exit 0
-          fi
-          cargo test --test integration -- --ignored --nocapture
-        env:
-          RUST_BACKTRACE: 1
-          VERTEX_API_KEY: ${{ secrets.VERTEX_API_KEY }}
-          GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
-          GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
-          VERTEX_REGION: ${{ secrets.VERTEX_REGION || 'us-central1' }}
+            - name: Run E2E tests with credentials
+              run: |
+                  if [ -z "$VERTEX_API_KEY" ] && [ -z "$GOOGLE_APPLICATION_CREDENTIALS" ]; then
+                    echo "⚠️  Skipping E2E tests - no credentials available"
+                    exit 0
+                  fi
+                  cargo test --test integration -- --ignored --nocapture
+              env:
+                  RUST_BACKTRACE: 1
+                  VERTEX_API_KEY: ${{ secrets.VERTEX_API_KEY }}
+                  GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
+                  GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
+                  VERTEX_REGION: ${{ secrets.VERTEX_REGION || 'us-central1' }}
 
-  # Job 5: Build Rust binary (depends on fast checks)
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    needs: [lint, test-unit]
-    # Tag artifact with SHA for promotion
-    outputs:
-      artifact-sha: ${{ steps.sha.outputs.sha }}
+    # Job 5: Build Rust binary (depends on fast checks)
+    build:
+        name: Build
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        needs: [lint, test-unit]
+        # Tag artifact with SHA for promotion
+        outputs:
+            artifact-sha: ${{ steps.sha.outputs.sha }}
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
 
-      - name: Get commit SHA
-        id: sha
-        run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+            - name: Get commit SHA
+              id: sha
+              run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  components: rustfmt, clippy
 
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+            - name: Cache dependencies
+              uses: Swatinem/rust-cache@v2
+              with:
+                  key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build release
-        run: cargo build --release
+            - name: Build release
+              run: cargo build --release
 
-      - name: Check binary size
-        run: |
-          BINARY_SIZE=$(stat -f%z target/release/vertex-bridge 2>/dev/null || stat -c%s target/release/vertex-bridge 2>/dev/null || echo "0")
-          MAX_SIZE=$((15 * 1024 * 1024))  # 15MB limit
-          echo "Binary size: $BINARY_SIZE bytes ($(($BINARY_SIZE / 1024 / 1024))MB)"
-          if [ "$BINARY_SIZE" -gt "$MAX_SIZE" ]; then
-            echo "❌ Binary size exceeds limit: ${BINARY_SIZE} > ${MAX_SIZE}"
-            exit 1
-          fi
-          echo "✅ Binary size within limit"
+            - name: Check binary size
+              run: |
+                  BINARY_SIZE=$(stat -f%z target/release/vertex-bridge 2>/dev/null || stat -c%s target/release/vertex-bridge 2>/dev/null || echo "0")
+                  MAX_SIZE=$((15 * 1024 * 1024))  # 15MB limit
+                  echo "Binary size: $BINARY_SIZE bytes ($(($BINARY_SIZE / 1024 / 1024))MB)"
+                  if [ "$BINARY_SIZE" -gt "$MAX_SIZE" ]; then
+                    echo "❌ Binary size exceeds limit: ${BINARY_SIZE} > ${MAX_SIZE}"
+                    exit 1
+                  fi
+                  echo "✅ Binary size within limit"
 
-      - name: Upload binary
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: vertex-bridge-linux-x64-${{ steps.sha.outputs.sha }}
-          path: target/release/vertex-bridge
-          retention-days: 7
+            - name: Upload binary
+              continue-on-error: true
+              uses: actions/upload-artifact@v4
+              with:
+                  name: vertex-bridge-linux-x64-${{ steps.sha.outputs.sha }}
+                  path: target/release/vertex-bridge
+                  retention-days: 7
 
-  # Job 6: Build Node.js bridge (parallel with Rust build)
-  build-bridge:
-    name: Build Bridge
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: [lint]
+    # Job 6: Build Node.js bridge (parallel with Rust build)
+    build-bridge:
+        name: Build Bridge
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        needs: [lint]
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
 
-      - name: Get commit SHA
-        id: sha
-        run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+            - name: Get commit SHA
+              id: sha
+              run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "18"
-          cache: "npm"
-          cache-dependency-path: bridge/package-lock.json
+            - name: Setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: "18"
+                  cache: "npm"
+                  cache-dependency-path: bridge/package-lock.json
 
-      - name: Install dependencies
-        working-directory: bridge
-        run: npm ci
+            - name: Install dependencies
+              working-directory: bridge
+              run: npm ci
 
-      - name: Build TypeScript
-        working-directory: bridge
-        run: npm run build
+            - name: Build TypeScript
+              working-directory: bridge
+              run: npm run build
 
-      - name: Upload bridge
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: anthropic-bridge-linux-x64-${{ steps.sha.outputs.sha }}
-          path: |
-            bridge/dist/
-            bridge/package.json
-            bridge/package-lock.json
-          retention-days: 7
+            - name: Upload bridge
+              continue-on-error: true
+              uses: actions/upload-artifact@v4
+              with:
+                  name: anthropic-bridge-linux-x64-${{ steps.sha.outputs.sha }}
+                  path: |
+                      bridge/dist/
+                      bridge/package.json
+                      bridge/package-lock.json
+                  retention-days: 7

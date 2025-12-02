@@ -1,0 +1,20 @@
+# .gitleaks.toml
+# Gitleaks configuration for secret scanning
+
+title = "FkLLMProxy Secret Detection"
+
+[extend]
+# Use default rules
+useDefault = true
+
+[allowlist]
+description = "Exclude build artifacts, documentation examples, and test fixtures"
+paths = [
+  "^target/",
+  "^README\\.md$",
+  "^\\.env\\.example$",
+  "^tests/",
+  "package-lock\\.json$",
+  "Cargo\\.lock$",
+]
+

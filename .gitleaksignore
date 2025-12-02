@@ -1,0 +1,18 @@
+# .gitleaksignore
+# Paths and patterns to ignore in secret scanning
+# Format: regex patterns matching file paths
+
+# Build artifacts (no secrets, just compiled code)
+^target/
+
+# Example API keys in documentation (not real)
+^README\.md$
+^\.env\.example$
+
+# Test fixtures with fake secrets
+^tests/
+
+# Lock files (no secrets, but may trigger false positives)
+package-lock\.json$
+Cargo\.lock$
+
