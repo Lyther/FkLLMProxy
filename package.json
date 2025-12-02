@@ -9,7 +9,10 @@
     ],
     "scripts": {
         "prepare": "husky install",
-        "release": "standard-version"
+        "release": "standard-version",
+        "lint": "cargo clippy -- -D warnings",
+        "format": "cargo fmt --check",
+        "test": "cargo test"
     },
     "devDependencies": {
         "@commitlint/cli": "^18.4.3",
