@@ -1,6 +1,22 @@
 use crate::openai::models::BackendSSEEvent;
 use crate::openai::transformer::parse_sse_event;
 
+const DEFAULT_EVENT_TYPE: &str = "message";
+
+fn finish_current_event(
+    event_type: Option<String>,
+    data: &mut Vec<String>,
+) -> Option<(String, String)> {
+    if event_type.is_some() || !data.is_empty() {
+        let event = event_type.unwrap_or_else(|| DEFAULT_EVENT_TYPE.to_string());
+        let data_str = data.join("\n");
+        data.clear();
+        Some((event, data_str))
+    } else {
+        None
+    }
+}
+
 pub struct SSEParser {
     buffer: String,
     current_event: Option<String>,
@@ -39,27 +55,17 @@ impl SSEParser {
 
         for line in &complete_lines {
             if line.trim().is_empty() {
-                if self.current_event.is_some() || !self.current_data.is_empty() {
-                    let event_type = self
-                        .current_event
-                        .take()
-                        .unwrap_or_else(|| "message".to_string());
-                    let data_str = self.current_data.join("\n");
-                    self.current_data.clear();
-
+                if let Some((event_type, data_str)) =
+                    finish_current_event(self.current_event.take(), &mut self.current_data)
+                {
                     if let Some(event) = parse_sse_event(&event_type, &data_str) {
                         events.push(event);
                     }
                 }
             } else if let Some(event_data) = line.strip_prefix("event:") {
-                if self.current_event.is_some() || !self.current_data.is_empty() {
-                    let event_type = self
-                        .current_event
-                        .take()
-                        .unwrap_or_else(|| "message".to_string());
-                    let data_str = self.current_data.join("\n");
-                    self.current_data.clear();
-
+                if let Some((event_type, data_str)) =
+                    finish_current_event(self.current_event.take(), &mut self.current_data)
+                {
                     if let Some(event) = parse_sse_event(&event_type, &data_str) {
                         events.push(event);
                     }

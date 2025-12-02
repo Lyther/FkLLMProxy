@@ -9,7 +9,9 @@ use tracing::{error, info, warn};
 use vertex_bridge::config::AppConfig;
 use vertex_bridge::handlers::{chat, health, metrics};
 use vertex_bridge::middleware::{
-    api_version::api_version_middleware, auth::auth_middleware, rate_limit::RateLimiter,
+    api_version::api_version_middleware,
+    auth::auth_middleware,
+    rate_limit::{rate_limit_middleware, RateLimiter},
     security_headers::security_headers_middleware,
 };
 use vertex_bridge::openai::circuit_breaker::CircuitBreaker;
@@ -19,15 +21,46 @@ use vertex_bridge::services::cache::Cache;
 use vertex_bridge::services::providers::ProviderRegistry;
 use vertex_bridge::state::AppState;
 
+async fn setup_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let mut sigterm = match signal(SignalKind::terminate()) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                warn!("Failed to register SIGTERM handler: {}", e);
+                None
+            }
+        };
+
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                info!("Received Ctrl+C, initiating graceful shutdown");
+            }
+            _ = async {
+                if let Some(ref mut sigterm) = sigterm {
+                    let _ = sigterm.recv().await;
+                }
+            } => {
+                info!("Received SIGTERM, initiating graceful shutdown");
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            error!("Failed to install Ctrl+C handler: {}", e);
+            return;
+        }
+        info!("Received Ctrl+C, initiating graceful shutdown");
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // 0. Load Env (Explicitly here too, though Config does it)
-    dotenvy::dotenv().ok();
-
-    // Initialize Feature Flags from Env
     vertex_bridge::services::flags::FeatureFlags::init();
 
-    // 1. Load Config
     let config = match AppConfig::new() {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -37,7 +70,6 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // 2. Setup Logging with structured fields
     let log_format = config.log.format.as_str();
     let filter =
         tracing_subscriber::EnvFilter::try_new(format!("{},tower_http=debug", config.log.level))
@@ -71,19 +103,14 @@ async fn main() -> anyhow::Result<()> {
         config.server.host, config.server.port
     );
 
-    // 3. Initialize Services
-    // Pass the API Key from config if available
-    let token_manager = match TokenManager::new(
+    let token_manager = TokenManager::new(
         config.vertex.api_key.clone(),
         config.vertex.credentials_file.clone(),
-    ) {
-        Ok(tm) => tm,
-        Err(e) => {
-            warn!("Failed to initialize TokenManager: {}", e);
-            warn!("Server will start, but Vertex calls will fail until credentials are fixed.");
-            return Err(e);
-        }
-    };
+    )
+    .map_err(|e| {
+        error!("Failed to initialize TokenManager: {}", e);
+        anyhow::anyhow!("TokenManager initialization failed: {}", e)
+    })?;
 
     let rate_limiter = RateLimiter::new(
         config.rate_limit.capacity,
@@ -107,19 +134,16 @@ async fn main() -> anyhow::Result<()> {
         config: Arc::new(config.clone()),
         token_manager,
         provider_registry,
-        rate_limiter,
+        rate_limiter: rate_limiter.clone(),
         circuit_breaker,
         metrics,
         cache,
     };
 
-    // 4. Setup Router
     let max_request_size = config.server.max_request_size;
 
-    // Public routes (no authentication required)
     let public_routes = Router::new().route("/health", get(health::health_check));
 
-    // Protected routes (require authentication)
     let protected_routes = Router::new()
         .route("/metrics", get(metrics::metrics_handler))
         .route(
@@ -130,9 +154,12 @@ async fn main() -> anyhow::Result<()> {
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
+        ))
+        .layer(middleware::from_fn_with_state(
+            rate_limiter,
+            rate_limit_middleware,
         ));
 
-    // Combine routes with shared middleware
     let app = Router::new()
         .merge(public_routes)
         .merge(protected_routes)
@@ -145,7 +172,6 @@ async fn main() -> anyhow::Result<()> {
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state);
 
-    // 5. Start Server
     let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port)
         .parse()
         .map_err(|e| {
@@ -161,43 +187,7 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    // Graceful shutdown signal handling
-    let shutdown_signal = async {
-        #[cfg(unix)]
-        {
-            use tokio::signal::unix::{signal, SignalKind};
-
-            let mut sigterm = match signal(SignalKind::terminate()) {
-                Ok(s) => Some(s),
-                Err(e) => {
-                    warn!("Failed to register SIGTERM handler: {}", e);
-                    None
-                }
-            };
-
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {
-                    info!("Received Ctrl+C, initiating graceful shutdown");
-                }
-                _ = async {
-                    if let Some(ref mut sigterm) = sigterm {
-                        let _ = sigterm.recv().await;
-                    }
-                } => {
-                    info!("Received SIGTERM, initiating graceful shutdown");
-                }
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            tokio::signal::ctrl_c()
-                .await
-                .expect("Failed to install Ctrl+C handler");
-            info!("Received Ctrl+C, initiating graceful shutdown");
-        }
-    };
-
-    let server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal);
+    let server = axum::serve(listener, app).with_graceful_shutdown(setup_shutdown_signal());
 
     if let Err(e) = server.await {
         error!("Server error: {}", e);

@@ -32,7 +32,10 @@ pub fn map_error_with_status(status: u16, message: &str) -> axum::response::Resp
         503 => ("server_error", Some("service_unavailable".to_string())),
         504 => ("server_error", Some("timeout".to_string())),
         505..=599 => ("server_error", Some("upstream_error".to_string())),
-        _ => ("invalid_request_error", None),
+        _ => {
+            tracing::warn!("Invalid status code {} used for error response", status);
+            ("invalid_request_error", None)
+        }
     };
 
     error!("Error response: {} - {}", status, message);
@@ -45,10 +48,10 @@ pub fn map_error_with_status(status: u16, message: &str) -> axum::response::Resp
         },
     };
 
-    (
-        axum::http::StatusCode::from_u16(status)
-            .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
-        axum::Json(error_response),
-    )
-        .into_response()
+    let status_code = axum::http::StatusCode::from_u16(status).unwrap_or_else(|e| {
+        tracing::warn!("Failed to convert status code {}: {}", status, e);
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    });
+
+    (status_code, axum::Json(error_response)).into_response()
 }

@@ -5,26 +5,30 @@ use axum::{
     middleware::Next,
     response::Response,
 };
+use sha2::{Digest, Sha256};
 use tracing::warn;
+
+fn hash_token(token: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
 
 pub async fn auth_middleware(
     State(state): State<AppState>,
     req: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    // 1. Check if auth is enabled
     if !state.config.auth.require_auth {
         return Ok(next.run(req).await);
     }
 
-    // 2. Extract Authorization header
     let auth_header = req
         .headers()
         .get("Authorization")
         .and_then(|h| h.to_str().ok())
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
-    // 3. Validate Bearer token
     if !auth_header.starts_with("Bearer ") {
         return Err(StatusCode::UNAUTHORIZED);
     }
@@ -33,9 +37,9 @@ pub async fn auth_middleware(
         .strip_prefix("Bearer ")
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
-    // 4. Check against master key
     if token != state.config.auth.master_key {
-        warn!("Invalid API Key attempt: {}", token);
+        let token_hash = hash_token(token);
+        warn!("Invalid API Key attempt: {}...", &token_hash[..8]);
         return Err(StatusCode::UNAUTHORIZED);
     }
 
@@ -49,7 +53,13 @@ mod tests {
         AnthropicConfig, AppConfig, AuthConfig, CacheConfig, CircuitBreakerConfig, LogConfig,
         OpenAIConfig, RateLimitConfig, ServerConfig, VertexConfig,
     };
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+        Router,
+    };
     use std::sync::Arc;
+    use tower::util::ServiceExt;
 
     fn create_test_state(require_auth: bool, master_key: &str) -> AppState {
         let config = AppConfig {
@@ -78,8 +88,6 @@ mod tests {
                 harvester_url: "http://localhost:3001".to_string(),
                 access_token_ttl_secs: 3600,
                 arkose_token_ttl_secs: 120,
-                tls_fingerprint_enabled: false,
-                tls_fingerprint_target: "chrome120".to_string(),
             },
             anthropic: AnthropicConfig {
                 bridge_url: "http://localhost:4001".to_string(),
@@ -100,43 +108,86 @@ mod tests {
         };
 
         AppState {
-            config: Arc::new(config.clone()),
+            config: Arc::new(config),
             token_manager: crate::services::auth::TokenManager::new(None, None)
-                .expect("Failed to initialize TokenManager in test - this should never fail with None, None"),
+                .expect("Failed to initialize TokenManager in test"),
             provider_registry: Arc::new(crate::services::providers::ProviderRegistry::with_config(
-                Some(config.anthropic.bridge_url.clone()),
+                None,
             )),
-            rate_limiter: crate::middleware::rate_limit::RateLimiter::new(
-                config.rate_limit.capacity,
-                config.rate_limit.refill_per_second,
-            ),
+            rate_limiter: crate::middleware::rate_limit::RateLimiter::new(100, 10),
             circuit_breaker: Arc::new(crate::openai::circuit_breaker::CircuitBreaker::new(
-                config.circuit_breaker.failure_threshold,
-                config.circuit_breaker.timeout_secs,
-                config.circuit_breaker.success_threshold,
+                10, 60, 3,
             )),
             metrics: Arc::new(crate::openai::metrics::Metrics::new()),
             cache: Arc::new(crate::services::cache::Cache::new(false, 3600)),
         }
     }
 
-    #[test]
-    fn test_auth_config_disabled() {
-        let config = create_test_state(false, "").config;
-        assert!(!config.auth.require_auth);
+    #[tokio::test]
+    async fn test_auth_disabled() {
+        let state = create_test_state(false, "");
+        let app = Router::new()
+            .route("/test", axum::routing::get(|| async { StatusCode::OK }))
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                auth_middleware,
+            ))
+            .with_state(state);
+        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
-    #[test]
-    fn test_auth_config_enabled() {
-        let config = create_test_state(true, "test-key").config;
-        assert!(config.auth.require_auth);
-        assert_eq!(config.auth.master_key, "test-key");
+    #[tokio::test]
+    async fn test_auth_missing_header() {
+        let state = create_test_state(true, "test-key");
+        let app = Router::new()
+            .route("/test", axum::routing::get(|| async { StatusCode::OK }))
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                auth_middleware,
+            ))
+            .with_state(state);
+        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
-    #[test]
-    fn test_auth_key_validation() {
-        let config = create_test_state(true, "correct-key").config;
-        assert_ne!(config.auth.master_key, "wrong-key");
-        assert_eq!(config.auth.master_key, "correct-key");
+    #[tokio::test]
+    async fn test_auth_invalid_token() {
+        let state = create_test_state(true, "correct-key");
+        let app = Router::new()
+            .route("/test", axum::routing::get(|| async { StatusCode::OK }))
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                auth_middleware,
+            ))
+            .with_state(state);
+        let req = Request::builder()
+            .uri("/test")
+            .header("Authorization", "Bearer wrong-key")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_auth_valid_token() {
+        let state = create_test_state(true, "test-key");
+        let app = Router::new()
+            .route("/test", axum::routing::get(|| async { StatusCode::OK }))
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                auth_middleware,
+            ))
+            .with_state(state);
+        let req = Request::builder()
+            .uri("/test")
+            .header("Authorization", "Bearer test-key")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

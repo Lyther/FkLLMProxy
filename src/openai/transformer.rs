@@ -3,6 +3,7 @@ use crate::openai::models::{
     BackendContent, BackendConversationRequest, BackendMessage, BackendMessageData, BackendSSEEvent,
 };
 use anyhow::Result;
+use tracing::warn;
 use uuid::Uuid;
 
 pub fn transform_to_backend(
@@ -51,12 +52,16 @@ pub fn parse_sse_event(event_type: &str, data_str: &str) -> Option<BackendSSEEve
         });
     }
 
-    let data: serde_json::Value = serde_json::from_str(data_str).ok()?;
-
-    Some(BackendSSEEvent {
-        event_type: event_type.to_string(),
-        data,
-    })
+    match serde_json::from_str::<serde_json::Value>(data_str) {
+        Ok(data) => Some(BackendSSEEvent {
+            event_type: event_type.to_string(),
+            data,
+        }),
+        Err(e) => {
+            warn!("Failed to parse SSE event JSON: {} - data: {}", e, data_str);
+            None
+        }
+    }
 }
 
 pub fn transform_sse_to_openai_chunk(
@@ -85,7 +90,13 @@ pub fn transform_sse_to_openai_chunk(
         return None;
     }
 
-    let message_data: BackendMessageData = serde_json::from_value(event.data.clone()).ok()?;
+    let message_data: BackendMessageData = match serde_json::from_value(event.data.clone()) {
+        Ok(data) => data,
+        Err(e) => {
+            warn!("Failed to parse backend message data: {}", e);
+            return None;
+        }
+    };
 
     let content = message_data.message?.content;
     let content_str = match content {
@@ -107,4 +118,37 @@ pub fn transform_sse_to_openai_chunk(
             finish_reason: None,
         }],
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::openai::{ChatCompletionRequest, ChatMessage, Role};
+
+    #[test]
+    fn test_transform_request_basic() {
+        let req = ChatCompletionRequest {
+            model: "test-model".to_string(),
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: "Hello".to_string(),
+                name: None,
+            }],
+            stream: false,
+            temperature: 0.7,
+            top_p: 0.9,
+            max_tokens: Some(100),
+            stop: None,
+        };
+
+        let backend_req = transform_to_backend(
+            &req.model,
+            &req.messages,
+            Some(req.temperature),
+            req.max_tokens,
+        )
+        .unwrap();
+        assert_eq!(backend_req.messages.len(), 1);
+        assert_eq!(backend_req.messages[0].role, "user");
+    }
 }

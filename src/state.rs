@@ -7,6 +7,19 @@ use crate::services::cache::Cache;
 use crate::services::providers::ProviderRegistry;
 use std::sync::Arc;
 
+/// Application state shared across all request handlers.
+///
+/// This struct holds all the shared resources needed by handlers:
+/// - Configuration (read-only)
+/// - Token manager for Google Cloud authentication
+/// - Provider registry for routing requests to different LLM providers
+/// - Rate limiter for request throttling
+/// - Circuit breaker for backend resilience
+/// - Metrics collector for observability
+/// - Response cache for performance optimization
+///
+/// All fields are wrapped in `Arc` for efficient sharing across async tasks,
+/// except `token_manager` and `rate_limiter` which are `Clone` themselves.
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<AppConfig>,

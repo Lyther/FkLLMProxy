@@ -4,69 +4,59 @@ use anyhow::{Context, Result};
 use reqwest::Client;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{info, warn};
+use thiserror::Error;
+use tracing::warn;
+
+#[derive(Debug, Error)]
+pub enum BackendError {
+    #[error("Authentication failed - token may be expired: {0}")]
+    Auth(String),
+    #[error("WAF blocked - TLS fingerprint may be detected: {0}")]
+    WafBlocked(String),
+    #[error("Rate limit exceeded: {0}")]
+    RateLimited(String),
+    #[error("Backend error (status {0}): {1}")]
+    HttpError(u16, String),
+    #[error("Network error: {0}")]
+    Network(#[from] reqwest::Error),
+    #[error("Circuit breaker is open")]
+    CircuitOpen(#[from] crate::openai::circuit_breaker::CircuitOpenError),
+}
+
+impl BackendError {
+    pub fn status_code(&self) -> u16 {
+        match self {
+            BackendError::Auth(_) => 401,
+            BackendError::WafBlocked(_) => 403,
+            BackendError::RateLimited(_) => 429,
+            BackendError::HttpError(status, _) => *status,
+            BackendError::Network(_) => 502,
+            BackendError::CircuitOpen(_) => 503,
+        }
+    }
+}
+
+const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api/conversation";
+const CLIENT_TIMEOUT_SECS: u64 = 60;
 
 pub struct OpenAIBackendClient {
     client: Client,
     base_url: String,
-    #[allow(dead_code)] // Stored for future TLS fingerprinting implementation
-    tls_fingerprint_enabled: bool,
-    #[allow(dead_code)] // Stored for future TLS fingerprinting implementation
-    tls_fingerprint_target: String,
 }
 
 impl OpenAIBackendClient {
-    pub fn new(config: &Arc<AppConfig>) -> Result<Self> {
-        let tls_fingerprint_enabled = config.openai.tls_fingerprint_enabled;
-        let tls_fingerprint_target = config.openai.tls_fingerprint_target.clone();
-
-        if tls_fingerprint_enabled {
-            warn!(
-                "TLS fingerprinting enabled (target: {}), but reqwest-impersonate not yet implemented. \
-                Requests may still be blocked by WAF. See docs/dev/adr/005-tls-fingerprinting.md",
-                tls_fingerprint_target
-            );
-        } else {
-            info!(
-                "TLS fingerprinting disabled. OpenAI requests may be blocked by Cloudflare WAF. \
-                Enable with APP_OPENAI__TLS_FINGERPRINT_ENABLED=true"
-            );
-        }
-
-        // Build client with enhanced TLS configuration
-        // Note: Full TLS fingerprinting requires reqwest-impersonate or similar library
-        // For now, we configure the client with browser-like settings
-        let client_builder = reqwest::Client::builder()
-            .timeout(Duration::from_secs(60))
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .danger_accept_invalid_certs(false); // Use proper TLS validation
-
-        // Configure TLS to match target browser fingerprint
-        // This is a placeholder - full implementation requires reqwest-impersonate
-        match tls_fingerprint_target.as_str() {
-            "chrome120" | "chrome" => {
-                // Chrome 120 TLS settings would go here
-                // Currently using default rustls which may not match Chrome exactly
-                info!("TLS fingerprint target: Chrome 120 (not yet fully implemented)");
-            }
-            "firefox120" | "firefox" => {
-                // Firefox 120 TLS settings would go here
-                info!("TLS fingerprint target: Firefox 120 (not yet fully implemented)");
-            }
-            _ => {
-                warn!("Unknown TLS fingerprint target: {}", tls_fingerprint_target);
-            }
-        }
-
-        let client = client_builder
+    pub fn new(_config: &Arc<AppConfig>) -> Result<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(CLIENT_TIMEOUT_SECS))
+            .user_agent(DEFAULT_USER_AGENT)
+            .danger_accept_invalid_certs(false)
             .build()
             .context("Failed to create HTTP client")?;
 
         Ok(Self {
             client,
-            base_url: "https://chatgpt.com/backend-api/conversation".to_string(),
-            tls_fingerprint_enabled,
-            tls_fingerprint_target,
+            base_url: DEFAULT_BASE_URL.to_string(),
         })
     }
 
@@ -75,11 +65,11 @@ impl OpenAIBackendClient {
         request: BackendConversationRequest,
         access_token: &str,
         arkose_token: Option<&str>,
-    ) -> Result<reqwest::Response> {
+    ) -> Result<reqwest::Response, BackendError> {
         let mut req_builder = self
             .client
             .post(&self.base_url)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .header("User-Agent", DEFAULT_USER_AGENT)
             .header("Accept-Language", "en-US,en;q=0.9")
             .header("Referer", "https://chatgpt.com/")
             .header("Authorization", format!("Bearer {}", access_token))
@@ -89,23 +79,21 @@ impl OpenAIBackendClient {
             req_builder = req_builder.header("Openai-Sentinel-Arkose-Token", arkose);
         }
 
-        let response = req_builder
-            .send()
-            .await
-            .context("Failed to send request to OpenAI backend")?;
+        let response = req_builder.send().await.map_err(BackendError::Network)?;
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let text = response.text().await.unwrap_or_default();
+            let text = response.text().await.unwrap_or_else(|e| {
+                warn!("Failed to read error response body: {}", e);
+                String::new()
+            });
 
-            let error_msg = match status {
-                401 => "Authentication failed - token may be expired",
-                403 => "WAF blocked - TLS fingerprint may be detected",
-                429 => "Rate limit exceeded",
-                _ => "Backend error",
-            };
-
-            anyhow::bail!("{}: {}", error_msg, text);
+            return Err(match status {
+                401 => BackendError::Auth(text),
+                403 => BackendError::WafBlocked(text),
+                429 => BackendError::RateLimited(text),
+                _ => BackendError::HttpError(status, text),
+            });
         }
 
         Ok(response)
