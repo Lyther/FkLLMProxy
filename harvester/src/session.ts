@@ -1,8 +1,12 @@
-import * as fs from 'fs';
+import * as fs from 'fs/promises';
 import * as path from 'path';
 import { browser } from './browser.js';
+import { logger } from './logger.js';
 
 const COOKIES_FILE = path.join(process.cwd(), 'cookies.json');
+const INITIALIZATION_WAIT_MS = 2000;
+const KEEP_ALIVE_WAIT_MS = 1000;
+const KEEP_ALIVE_INTERVAL_MS = 5 * 60 * 1000;
 
 interface Cookie {
   name: string;
@@ -19,31 +23,31 @@ let accessToken: string | null = null;
 let sessionValid = false;
 let keepAliveInterval: NodeJS.Timeout | null = null;
 
-function loadCookies(): Cookie[] {
+async function loadCookies(): Promise<Cookie[]> {
   try {
-    if (fs.existsSync(COOKIES_FILE)) {
-      const data = fs.readFileSync(COOKIES_FILE, 'utf-8');
-      const parsed = JSON.parse(data);
-      return Array.isArray(parsed) ? parsed : [];
-    }
+    const data = await fs.readFile(COOKIES_FILE, 'utf-8');
+    const parsed = JSON.parse(data);
+    return Array.isArray(parsed) ? parsed : [];
   } catch (error) {
-    console.error('Failed to load cookies:', error);
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      logger.error({ err: error }, 'Failed to load cookies');
+    }
+    return [];
   }
-  return [];
 }
 
-function saveCookies(cookies: Cookie[]): void {
+async function saveCookies(cookies: Cookie[]): Promise<void> {
   try {
-    fs.writeFileSync(COOKIES_FILE, JSON.stringify(cookies, null, 2));
+    await fs.writeFile(COOKIES_FILE, JSON.stringify(cookies, null, 2));
   } catch (error) {
-    console.error('Failed to save cookies:', error);
+    logger.error({ err: error }, 'Failed to save cookies');
   }
 }
 
 export const session = {
   async initialize(): Promise<void> {
     const context = browser.getContext();
-    const savedCookies = loadCookies();
+    const savedCookies = await loadCookies();
 
     if (savedCookies.length > 0) {
       await context.addCookies(savedCookies);
@@ -64,19 +68,20 @@ export const session = {
               sessionValid = true;
             }
           } catch (e) {
-            // Ignore JSON parse errors
+            logger.error({ err: e }, 'Failed to parse session response JSON');
           }
         }
       });
 
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(INITIALIZATION_WAIT_MS);
 
       const cookies = await context.cookies();
-      saveCookies(cookies);
+      await saveCookies(cookies);
 
       this.startKeepAlive();
     } catch (error) {
-      console.error('Session initialization error:', error);
+      logger.error({ err: error }, 'Session initialization error');
+      throw error;
     } finally {
       await page.close();
     }
@@ -92,16 +97,16 @@ export const session = {
         const context = browser.getContext();
         const page = await context.newPage();
         await page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(1000);
+        await page.waitForTimeout(KEEP_ALIVE_WAIT_MS);
 
         const cookies = await context.cookies();
-        saveCookies(cookies);
+        await saveCookies(cookies);
 
         await page.close();
       } catch (error) {
-        console.error('Keep-alive error:', error);
+        logger.error({ err: error }, 'Keep-alive error');
       }
-    }, 5 * 60 * 1000);
+    }, KEEP_ALIVE_INTERVAL_MS);
   },
 
   stopKeepAlive(): void {
@@ -136,7 +141,7 @@ export const session = {
       await page.close();
       return false;
     } catch (error) {
-      console.error('Session validation error:', error);
+      logger.error({ err: error }, 'Session validation error');
       return false;
     }
   },
@@ -145,4 +150,3 @@ export const session = {
     return accessToken;
   },
 };
-

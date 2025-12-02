@@ -1,4 +1,7 @@
-import { chromium, Browser, BrowserContext } from 'playwright';
+import { Browser, BrowserContext, chromium } from 'playwright';
+
+const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const DEFAULT_VIEWPORT = { width: 1920, height: 1080 };
 
 let browserInstance: Browser | null = null;
 let context: BrowserContext | null = null;
@@ -9,18 +12,31 @@ export const browser = {
       return;
     }
 
-    browserInstance = await chromium.launch({
-      headless: true,
-      args: ['--disable-blink-features=AutomationControlled'],
-    });
+    try {
+      browserInstance = await chromium.launch({
+        headless: true,
+        args: ['--disable-blink-features=AutomationControlled'],
+      });
 
-    context = await browserInstance.newContext({
-      userAgent:
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      viewport: { width: 1920, height: 1080 },
-    });
+      context = await browserInstance.newContext({
+        userAgent: process.env.USER_AGENT || DEFAULT_USER_AGENT,
+        viewport: process.env.VIEWPORT_WIDTH && process.env.VIEWPORT_HEIGHT
+          ? { width: parseInt(process.env.VIEWPORT_WIDTH), height: parseInt(process.env.VIEWPORT_HEIGHT) }
+          : DEFAULT_VIEWPORT,
+      });
 
-    await context.addCookies([]);
+      await context.addCookies([]);
+    } catch (error) {
+      if (context) {
+        await context.close().catch(() => { });
+        context = null;
+      }
+      if (browserInstance) {
+        await browserInstance.close().catch(() => { });
+        browserInstance = null;
+      }
+      throw error;
+    }
   },
 
   getContext(): BrowserContext {
@@ -48,4 +64,3 @@ export const browser = {
     }
   },
 };
-

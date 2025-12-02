@@ -1,5 +1,5 @@
-import { session } from './session.js';
 import { arkose } from './arkose.js';
+import { session } from './session.js';
 
 interface TokenData {
   access_token: string;
@@ -7,11 +7,12 @@ interface TokenData {
   expires_at: number;
 }
 
+const ACCESS_TOKEN_TTL_MS = 3600 * 1000;
+const ARKOSE_TOKEN_TTL_MS = 120 * 1000;
+const ACCESS_TOKEN_TTL_SECS = 3600;
+
 let cachedTokens: TokenData | null = null;
 let lastRefreshTime = 0;
-
-const ACCESS_TOKEN_TTL = 3600 * 1000;
-const ARKOSE_TOKEN_TTL = 120 * 1000;
 
 export const tokens = {
   async getTokens(): Promise<TokenData> {
@@ -19,7 +20,7 @@ export const tokens = {
 
     if (cachedTokens) {
       const age = now - lastRefreshTime;
-      const ttl = cachedTokens.arkose_token ? ARKOSE_TOKEN_TTL : ACCESS_TOKEN_TTL;
+      const ttl = cachedTokens.arkose_token ? ARKOSE_TOKEN_TTL_MS : ACCESS_TOKEN_TTL_MS;
 
       if (age < ttl) {
         return cachedTokens;
@@ -37,16 +38,13 @@ export const tokens = {
 
     let arkoseToken: string | undefined;
     if (forceArkose || !cachedTokens?.arkose_token) {
-      try {
-        arkoseToken = await arkose.getToken();
-      } catch (error) {
-        console.error('Failed to get Arkose token:', error);
-      }
+      // Propagate Arkose errors when explicitly required (GPT-4 models)
+      arkoseToken = await arkose.getToken();
     } else {
       arkoseToken = cachedTokens.arkose_token;
     }
 
-    const expiresAt = Math.floor(Date.now() / 1000) + 3600;
+    const expiresAt = Math.floor(Date.now() / 1000) + ACCESS_TOKEN_TTL_SECS;
 
     cachedTokens = {
       access_token: accessToken,
@@ -62,4 +60,3 @@ export const tokens = {
     return Math.floor(lastRefreshTime / 1000);
   },
 };
-

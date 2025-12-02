@@ -1,9 +1,10 @@
 import { browser } from './browser.js';
 
+const ARKOSE_TOKEN_TTL_MS = 120 * 1000;
+const ARKOSE_TIMEOUT_MS = 10000;
+
 let cachedToken: string | null = null;
 let tokenExpiry = 0;
-
-const TOKEN_TTL = 120 * 1000;
 
 export const arkose = {
   async getToken(): Promise<string> {
@@ -20,8 +21,6 @@ export const arkose = {
 
       const token = await page.evaluate(() => {
         return new Promise<string>((resolve, reject) => {
-          // page.evaluate() runs in browser context where window exists
-          // Type assertion for browser globals available in evaluate context
           interface ArkoseAPI {
             runEnforcement: (callback: (data: { token?: string }) => void) => void;
           }
@@ -46,20 +45,21 @@ export const arkose = {
             reject(new Error('Arkose not available'));
           }
 
-          setTimeout(() => reject(new Error('Arkose timeout')), 10000);
+          setTimeout(() => reject(new Error('Arkose timeout')), ARKOSE_TIMEOUT_MS);
         });
       });
 
       cachedToken = token;
-      tokenExpiry = now + TOKEN_TTL;
+      tokenExpiry = now + ARKOSE_TOKEN_TTL_MS;
 
       return token;
     } catch (error) {
-      console.error('Arkose token generation error:', error);
-      throw new Error(`Failed to generate Arkose token: ${error}`);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const cause = error instanceof Error && error.cause ? error.cause : undefined;
+      const enhancedError = new Error(`Failed to generate Arkose token: ${errorMessage}`, { cause });
+      throw enhancedError;
     } finally {
       await page.close();
     }
   },
 };
-
