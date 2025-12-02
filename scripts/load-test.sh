@@ -3,6 +3,7 @@
 # Uses hey or wrk for load testing
 
 set -e
+set -o pipefail
 
 BASE_URL="${1:-http://localhost:4000}"
 API_KEY="${2:-sk-vertex-bridge-dev}"

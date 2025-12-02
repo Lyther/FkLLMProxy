@@ -4,6 +4,7 @@
 # Tests model support and sends a sample request
 
 set -e
+set -o pipefail
 
 # Colors for output
 RED='\033[0;31m'

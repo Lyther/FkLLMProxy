@@ -3,6 +3,7 @@
 # Usage: ./scripts/validate-openapi.sh
 
 set -e
+set -o pipefail
 
 OPENAPI_FILE="docs/dev/api/openapi.yaml"
 

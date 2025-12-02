@@ -3,6 +3,7 @@
 # These tests must pass before deployment
 
 set -e
+set -o pipefail
 
 echo "Running critical tests..."
 cargo test --test integration -- --nocapture

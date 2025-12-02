@@ -3,6 +3,7 @@
 # Runs dependency scanning, checks for secrets, and validates security practices
 
 set -e
+set -o pipefail
 
 echo "🔒 Running Security Audit for FkLLMProxy"
 echo "========================================"

@@ -4,6 +4,7 @@
 # Tests streaming chat completions
 
 set -e
+set -o pipefail
 
 # Colors for output
 RED='\033[0;31m'
