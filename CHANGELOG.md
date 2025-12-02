@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [1.0.1] - 2025-12-02
+
+### 🐛 Bug Fixes
+
+* Wait for assistant marker before processing output ([22a0da3](https://github.com/Lyther/FkLLMProxy/commit/22a0da35e04782a95f3f26b1a4b11a97119ff3d2))
+
+### 🔧 Chores
+
+* Update Dockerfiles, dependencies, and configuration files ([8e099c3](https://github.com/Lyther/FkLLMProxy/commit/8e099c3c8b097a21f8d3b33e6c40121b2d29ff7e))
+
 ## 1.0.0 (2025-11-30)
 
 
