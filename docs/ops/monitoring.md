@@ -264,10 +264,9 @@ See [Performance Testing Guide](../dev/testing/guide.md) for load testing proced
 
 ### WAF Blocks
 
-1. Enable TLS fingerprinting: `APP_OPENAI__TLS_FINGERPRINT_ENABLED=true`
-2. Check token freshness
-3. Review request patterns
-4. See [TLS Fingerprinting ADR](../dev/adr/005-tls-fingerprinting.md)
+1. Check token freshness
+2. Review request patterns
+3. See [TLS Fingerprinting ADR](../dev/adr/005-tls-fingerprinting.md) for future implementation
 
 ## Best Practices
 

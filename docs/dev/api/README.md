@@ -6,7 +6,6 @@ This directory contains the API contract and related documentation.
 
 - `openapi.yaml` - OpenAPI 3.0.3 specification
 - `api-contract.ts` - TypeScript type definitions (for reference)
-- `VERSIONING.md` - API versioning strategy and breaking change policy
 
 ## Validation
 
@@ -70,7 +69,7 @@ The `created` field uses Unix epoch integers (not ISO 8601 strings) to match Ope
 
 ## Breaking Changes
 
-See [VERSIONING.md](./VERSIONING.md) for the versioning strategy and breaking change policy.
+API versioning is handled via the `API-Version` header. Breaking changes will increment the major version number.
 
 ## Generating Client Code
 
@@ -115,4 +114,3 @@ This header is added automatically by the `api_version_middleware` and helps cli
 
 - [OpenAPI Specification](https://swagger.io/specification/)
 - [OpenAPI Tools](https://openapi.tools/)
-- [API Versioning Strategy](./VERSIONING.md)

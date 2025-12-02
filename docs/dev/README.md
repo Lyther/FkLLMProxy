@@ -34,7 +34,6 @@
 
 - [`docs/ops/deployment.md`](../ops/deployment.md): Deployment guide (Docker, Systemd, Security).
 - [`docs/ops/runbook.md`](../ops/runbook.md): Operational runbook (Troubleshooting, Metrics).
-- [`docs/ops/audit/`](../ops/audit/): Audit reports (Dead code, Security, Docs).
 
 ## 4. Project Management
 
@@ -43,6 +42,3 @@
 - [`docs/project/roadmap.md`](../project/roadmap.md): Future plans.
 - [`docs/project/status.md`](../project/status.md): Current implementation status.
 - [`docs/project/todo.md`](../project/todo.md): Task list.
-
----
-**Note**: Legacy documents are archived in `docs/archive/`.

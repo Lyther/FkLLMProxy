@@ -1,7 +1,6 @@
 # Rust
 /target
 **/*.rs.bk
-Cargo.lock
 
 # Node
 node_modules/
@@ -10,6 +9,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+.npm/
 
 # Environment & Secrets
 .env
@@ -18,6 +18,11 @@ pnpm-debug.log*
 service-account.json
 fkllmproxy-*.json
 *.json.bak
+*.pem
+*.key
+*.pfx
+*.p12
+credentials.json
 
 # Logs
 logs/
@@ -28,13 +33,19 @@ server.log
 .terraform/
 *.tfstate
 *.tfstate.backup
+.terraform.lock.hcl
 
 # IDE
-.vscode/
 .idea/
 *.swp
 *.swo
 .cursor/
+.husky/
+.vscode/
+.cursorignore
+.cursorrules
+.editorconfig
+FkLLMProxy.code-workspace
 
 # OS
 .DS_Store
@@ -44,6 +55,7 @@ server.log
 .Trashes
 ehthumbs.db
 Thumbs.db
+desktop.ini
 
 # Temporary files
 *.tmp
@@ -53,10 +65,12 @@ Thumbs.db
 *~
 
 # Build artifacts
+build/
 *.o
 *.so
 *.dylib
 *.dll
+__pycache__/
 
 # Coverage reports
 *.gcda
@@ -64,8 +78,21 @@ Thumbs.db
 *.profdata
 coverage/
 *.lcov
+tarpaulin-report.html
 
 # Debug files
 *.pdb
 *.dSYM/
 .actrc
+
+# Playwright (harvester)
+playwright-report/
+playwright/.cache/
+test-results/
+
+# Harvester session
+cookies/
+cookies.json
+
+# Docker
+.docker/

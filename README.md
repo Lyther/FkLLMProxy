@@ -312,8 +312,6 @@ Returns Prometheus-formatted metrics (text/plain) for scraping by monitoring sys
 | `APP_CIRCUIT_BREAKER__SUCCESS_THRESHOLD` | No | Circuit breaker success threshold (default: `3`) |
 | `APP_CACHE__ENABLED` | No | Enable response caching (default: `false`) |
 | `APP_CACHE__DEFAULT_TTL_SECS` | No | Cache TTL in seconds (default: `3600` = 1 hour) |
-| `APP_OPENAI__TLS_FINGERPRINT_ENABLED` | No | Enable TLS fingerprinting for OpenAI (default: `false`) |
-| `APP_OPENAI__TLS_FINGERPRINT_TARGET` | No | TLS fingerprint target: `chrome120` or `firefox120` (default: `chrome120`) |
 | `APP_LOG__FORMAT` | No | Log format: `json` or `pretty` (default: `pretty`) |
 | `VERTEX_API_KEY` | No* | Google AI Studio API key (for E2E tests) |
 | `VERTEX_REGION` | No | GCP region for Vertex AI (default: `us-central1`, for E2E tests) |

@@ -14,12 +14,10 @@ All notable changes to this project will be documented in this file. See [standa
 
 ## 1.0.0 (2025-11-30)
 
-
 ### Features
 
 * add docker-compose and update docs ([6f59077](https://github.com/Lyther/FkLLMProxy/commit/6f590772f9cd6e23a5fc073dee82ff7cc4d1e4e5))
 * v1.0 preview ([5810267](https://github.com/Lyther/FkLLMProxy/commit/58102674968ca471990b81fdf28bf4f5c24427e1))
-
 
 ### Bug Fixes
 
