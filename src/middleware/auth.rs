@@ -6,6 +6,7 @@ use axum::{
     response::Response,
 };
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use tracing::warn;
 
 fn hash_token(token: &str) -> String {
@@ -37,9 +38,18 @@ pub async fn auth_middleware(
         .strip_prefix("Bearer ")
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
-    if token != state.config.auth.master_key {
-        let token_hash = hash_token(token);
-        warn!("Invalid API Key attempt: {}...", &token_hash[..8]);
+    // Use constant-time comparison to prevent timing attacks
+    let token_hash = hash_token(token);
+    let master_key_hash = hash_token(&state.config.auth.master_key);
+
+    // Compare hashes using constant-time comparison
+    // ct_eq returns Choice which can be converted to bool
+    let tokens_match = token_hash.as_bytes().ct_eq(master_key_hash.as_bytes());
+    if !bool::from(tokens_match) {
+        warn!(
+            "Invalid API Key attempt: {}...",
+            &token_hash[..8.min(token_hash.len())]
+        );
         return Err(StatusCode::UNAUTHORIZED);
     }
 
