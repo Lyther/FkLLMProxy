@@ -4,11 +4,12 @@ use axum::{
     middleware::Next,
     response::Response,
 };
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     net::IpAddr,
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::RwLock;
 use tracing::{error, warn};
@@ -21,13 +22,21 @@ fn is_valid_ip(ip_str: &str) -> bool {
     ip_str.parse::<IpAddr>().is_ok()
 }
 
-fn extract_client_ip(request: &Request) -> String {
+fn extract_rate_limit_key(request: &Request) -> String {
+    // SECURITY: Hash authorization token instead of using it directly
+    // This prevents token exposure in logs/metrics and enumeration attacks
     if let Some(auth_header) = request
         .headers()
         .get("authorization")
         .and_then(|h| h.to_str().ok())
     {
-        return auth_header.to_string();
+        let mut hasher = Sha256::new();
+        hasher.update(auth_header.as_bytes());
+        let hash = hasher.finalize();
+        // Use first 16 bytes of hash as key (32 hex chars) to prevent token exposure
+        // Format as hex string: each byte becomes 2 hex chars
+        let hash_hex: String = hash[..16].iter().map(|b| format!("{:02x}", b)).collect();
+        return format!("auth:{}", hash_hex);
     }
 
     let forwarded_ips = request
@@ -84,6 +93,8 @@ pub struct RateLimitInfo {
 
 impl RateLimiter {
     pub fn new(capacity: u32, refill_per_second: u32) -> Self {
+        // Validate refill_per_second to prevent division by zero
+        let refill_per_second = refill_per_second.max(1);
         Self {
             buckets: Arc::new(RwLock::new(HashMap::new())),
             capacity,
@@ -93,8 +104,9 @@ impl RateLimiter {
     }
 
     fn calculate_tokens_to_add(elapsed: Duration, refill_rate: Duration) -> u32 {
-        let elapsed_nanos = elapsed.as_nanos() as u64;
-        let refill_nanos = refill_rate.as_nanos() as u64;
+        // Fix: Prevent overflow when converting duration to nanoseconds
+        let elapsed_nanos = elapsed.as_nanos().min(u64::MAX as u128) as u64;
+        let refill_nanos = refill_rate.as_nanos().min(u64::MAX as u128) as u64;
         if refill_nanos == 0 {
             return 0;
         }
@@ -160,6 +172,8 @@ impl RateLimiter {
     }
 
     pub async fn get_info(&self, key: &str) -> RateLimitInfo {
+        // Fix race condition: check() modifies bucket, so we need to read current state
+        // after potential refill. We'll calculate based on current bucket state.
         let buckets = self.buckets.read().await;
         let bucket = buckets.get(key).cloned().unwrap_or_else(|| TokenBucket {
             tokens: self.capacity,
@@ -173,7 +187,8 @@ impl RateLimiter {
 
         let tokens_needed = self.capacity.saturating_sub(current_tokens);
         let reset_seconds = if tokens_needed > 0 {
-            let refill_nanos = self.refill_rate.as_nanos() as u64;
+            // Fix: Prevent overflow when converting duration to nanoseconds
+            let refill_nanos = self.refill_rate.as_nanos().min(u64::MAX as u128) as u64;
             if refill_nanos == 0 {
                 0
             } else {
@@ -183,10 +198,18 @@ impl RateLimiter {
             0
         };
 
+        // Fix reset timestamp bug: use SystemTime instead of Instant::elapsed()
+        // reset should be Unix timestamp (seconds since epoch), not elapsed time
+        let reset_timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_secs()
+            + reset_seconds;
+
         RateLimitInfo {
             limit: self.capacity,
             remaining: current_tokens,
-            reset: now.elapsed().as_secs() + reset_seconds,
+            reset: reset_timestamp,
         }
     }
 }
@@ -224,10 +247,12 @@ pub async fn rate_limit_middleware(
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    let key = extract_client_ip(&request);
+    let key = extract_rate_limit_key(&request);
+    // Fix race condition: call check() first to update bucket state, then get_info()
+    let allowed = limiter.check(&key).await;
     let info = limiter.get_info(&key).await;
 
-    if !limiter.check(&key).await {
+    if !allowed {
         warn!("Rate limit exceeded for key: {}", key);
         let error_body = serde_json::json!({
             "error": {
