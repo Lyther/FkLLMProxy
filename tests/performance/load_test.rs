@@ -3,7 +3,6 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::test_utils;
     use crate::test_utils::{create_chat_request, create_simple_message, TestServer};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -11,9 +10,7 @@ mod tests {
     use tokio::time::timeout;
 
     #[tokio::test]
-    #[ignore]
     async fn test_concurrent_requests() {
-        let server = TestServer::new();
         let concurrency = 10;
         let requests_per_worker = 5;
 
@@ -77,7 +74,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
     async fn test_sustained_load() {
         let server = TestServer::new();
         let duration_secs = 10;

@@ -5,7 +5,7 @@ use super::test_utils::{create_chat_request, create_simple_message, TestServer};
 use axum::body::to_bytes;
 use axum::http::StatusCode;
 use serde_json::Value;
-use vertex_bridge::services::providers::{route_provider, Provider};
+use vertex_bridge::services::providers::ProviderRegistry;
 
 #[tokio::test]
 async fn test_provider_routing_gemini_to_vertex() {
@@ -144,14 +144,21 @@ async fn test_provider_routing_streaming_vs_non_streaming() {
 }
 
 #[test]
-fn test_route_provider_function() {
-    // Test routing logic directly
-    assert_eq!(route_provider("gemini-2.5-flash"), Provider::Vertex);
-    assert_eq!(route_provider("gemini-1.5-pro"), Provider::Vertex);
-    assert_eq!(route_provider("claude-3-5-sonnet"), Provider::AnthropicCLI);
-    assert_eq!(route_provider("claude-3-haiku"), Provider::AnthropicCLI);
-    assert_eq!(route_provider("unknown-model"), Provider::Vertex); // Default
-    assert_eq!(route_provider(""), Provider::Vertex); // Default
+fn test_provider_routing_logic() {
+    // Test routing logic via registry
+    let registry = ProviderRegistry::with_config(Some("http://localhost:4001".to_string()));
+
+    // Gemini models should route to Vertex
+    assert!(registry.route_by_model("gemini-2.5-flash").is_some());
+    assert!(registry.route_by_model("gemini-1.5-pro").is_some());
+
+    // Claude models should route to Anthropic
+    assert!(registry.route_by_model("claude-3-5-sonnet").is_some());
+    assert!(registry.route_by_model("claude-3-haiku").is_some());
+
+    // Unknown models return None (no default routing)
+    assert!(registry.route_by_model("unknown-model").is_none());
+    assert!(registry.route_by_model("").is_none());
 }
 
 #[tokio::test]

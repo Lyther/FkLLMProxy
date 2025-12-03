@@ -4,9 +4,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::test_utils;
     use crate::test_utils::{create_chat_request, create_simple_message, TestServer};
-    use std::time::Duration;
 
     #[tokio::test]
     #[ignore]
