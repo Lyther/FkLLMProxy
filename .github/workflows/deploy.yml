@@ -174,7 +174,7 @@ jobs:
     notify:
         name: Notify
         runs-on: ubuntu-latest
-        needs: [preflight, deploy-staging, deploy-production]
+        needs: preflight
         if: always()
 
         steps:
@@ -187,4 +187,5 @@ jobs:
                   echo "| Environment | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
                   echo "| Version | ${{ inputs.version }} |" >> $GITHUB_STEP_SUMMARY
                   echo "| Triggered by | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
-                  echo "| Status | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
+                  echo "| Preflight Status | ${{ needs.preflight.result }} |" >> $GITHUB_STEP_SUMMARY
+                  echo "| Overall Status | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
