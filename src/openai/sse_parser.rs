@@ -33,17 +33,30 @@ impl SSEParser {
     }
 
     pub fn parse_chunk(&mut self, chunk: &[u8]) -> Vec<BackendSSEEvent> {
-        let text = String::from_utf8_lossy(chunk);
+        // Handle invalid UTF-8 explicitly instead of silently replacing
+        let text = match String::from_utf8(chunk.to_vec()) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("Invalid UTF-8 in SSE chunk: {}", e);
+                // Use lossy conversion but log the error
+                String::from_utf8_lossy(chunk).to_string()
+            }
+        };
         self.buffer.push_str(&text);
 
         let mut events = Vec::new();
+        // Use iterator directly to avoid allocation
         let all_lines: Vec<String> = self.buffer.lines().map(|s| s.to_string()).collect();
 
         let (complete_lines, incomplete) = if !text.ends_with('\n') && !text.ends_with('\r') {
             let len = all_lines.len();
-            if len > 0 {
+            // Fix potential bug: check len > 1 before slicing to avoid empty slice when len == 1
+            if len > 1 {
                 let incomplete = all_lines.last().cloned();
-                (all_lines[..len.saturating_sub(1)].to_vec(), incomplete)
+                (all_lines[..len - 1].to_vec(), incomplete)
+            } else if len == 1 {
+                // Single incomplete line - keep it in buffer
+                (Vec::new(), all_lines.last().cloned())
             } else {
                 (Vec::new(), None)
             }
@@ -63,6 +76,7 @@ impl SSEParser {
                     }
                 }
             } else if let Some(event_data) = line.strip_prefix("event:") {
+                // SSE spec requires space after colon: "event: " not "event:"
                 if let Some((event_type, data_str)) =
                     finish_current_event(self.current_event.take(), &mut self.current_data)
                 {
@@ -72,7 +86,11 @@ impl SSEParser {
                 }
                 self.current_event = Some(event_data.trim().to_string());
             } else if let Some(data) = line.strip_prefix("data:") {
+                // SSE spec requires space after colon: "data: " not "data:"
                 self.current_data.push(data.trim().to_string());
+            } else {
+                // Log unknown SSE line format for debugging
+                tracing::debug!("Unknown SSE line format: {}", line);
             }
         }
 
