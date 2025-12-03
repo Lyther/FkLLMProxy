@@ -69,11 +69,15 @@ pub fn transform_sse_to_openai_chunk(
     model: &str,
     request_id: &str,
 ) -> Option<ChatCompletionChunk> {
+    // Fix timestamp overflow: clamp timestamp to prevent overflow
+    let timestamp = chrono::Utc::now().timestamp();
+    let created = timestamp.max(0) as u64;
+
     if event.event_type == "done" {
         return Some(ChatCompletionChunk {
             id: request_id.to_string(),
             object: "chat.completion.chunk".to_string(),
-            created: chrono::Utc::now().timestamp() as u64,
+            created,
             model: model.to_string(),
             choices: vec![ChatCompletionChunkChoice {
                 index: 0,
@@ -104,10 +108,14 @@ pub fn transform_sse_to_openai_chunk(
         BackendContent::String(s) => s,
     };
 
+    // Fix timestamp overflow: clamp timestamp to prevent overflow
+    let timestamp = chrono::Utc::now().timestamp();
+    let created = timestamp.max(0) as u64;
+
     Some(ChatCompletionChunk {
         id: request_id.to_string(),
         object: "chat.completion.chunk".to_string(),
-        created: chrono::Utc::now().timestamp() as u64,
+        created,
         model: model.to_string(),
         choices: vec![ChatCompletionChunkChoice {
             index: 0,

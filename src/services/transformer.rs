@@ -10,29 +10,55 @@ use chrono::Utc;
 use tracing::warn;
 
 pub fn transform_request(req: ChatCompletionRequest) -> Result<GenerateContentRequest> {
-    let contents: Result<Vec<Content>> = req
+    // Collect all system messages and concatenate them
+    let system_messages: Vec<String> = req
         .messages
         .iter()
-        .map(|msg| {
-            let role = match msg.role {
-                Role::User => "user",
-                Role::Assistant => "model",
-                Role::System => "user",
-                Role::Tool => "user",
-            };
-
-            Ok(Content {
-                role: role.to_string(),
-                parts: vec![Part {
-                    text: Some(msg.content.clone()),
-                }],
-            })
-        })
+        .filter(|m| matches!(m.role, Role::System))
+        .map(|m| m.content.clone())
         .collect();
 
-    let mut vertex_req = GenerateContentRequest {
-        contents: contents?,
-        system_instruction: None,
+    let system_instruction_text = if !system_messages.is_empty() {
+        Some(system_messages.join("\n\n"))
+    } else {
+        None
+    };
+
+    // Collect non-system messages, preserving role semantics
+    // Note: Vertex API uses "user" and "model" roles, but we preserve Tool role as "user"
+    // since Vertex doesn't have a Tool role equivalent
+    let mut contents: Vec<Content> = Vec::new();
+
+    for msg in req.messages.iter() {
+        match msg.role {
+            Role::System => {
+                // System messages are already collected above
+            }
+            Role::User | Role::Tool => {
+                contents.push(Content {
+                    role: "user".to_string(),
+                    parts: vec![Part {
+                        text: Some(msg.content.clone()),
+                    }],
+                });
+            }
+            Role::Assistant => {
+                contents.push(Content {
+                    role: "model".to_string(),
+                    parts: vec![Part {
+                        text: Some(msg.content.clone()),
+                    }],
+                });
+            }
+        }
+    }
+
+    let vertex_req = GenerateContentRequest {
+        contents,
+        system_instruction: system_instruction_text.map(|text| Content {
+            role: "system".to_string(), // Use "system" role for system instruction
+            parts: vec![Part { text: Some(text) }],
+        }),
         generation_config: Some(GenerationConfig {
             temperature: Some(req.temperature),
             top_p: Some(req.top_p),
@@ -42,23 +68,6 @@ pub fn transform_request(req: ChatCompletionRequest) -> Result<GenerateContentRe
         }),
         safety_settings: None,
     };
-
-    if let Some(system_msg) = req.messages.iter().find(|m| matches!(m.role, Role::System)) {
-        vertex_req.system_instruction = Some(Content {
-            role: "user".to_string(),
-            parts: vec![Part {
-                text: Some(system_msg.content.clone()),
-            }],
-        });
-        let system_content = &system_msg.content;
-        vertex_req.contents.retain(|c| {
-            if let Some(text) = c.parts.first().and_then(|p| p.text.as_ref()) {
-                system_content != text
-            } else {
-                true
-            }
-        });
-    }
 
     Ok(vertex_req)
 }
@@ -84,24 +93,32 @@ pub fn transform_response(
 
     let finish_reason = candidate.finish_reason.as_ref().map(|s| s.to_lowercase());
 
-    let usage = vertex_res.usage_metadata.as_ref().map(|u| {
+    let usage = vertex_res.usage_metadata.as_ref().and_then(|u| {
         if u.prompt_token_count.is_none()
             || u.candidates_token_count.is_none()
             || u.total_token_count.is_none()
         {
-            warn!("Vertex response missing token counts - using 0");
-        }
-        Usage {
-            prompt_tokens: u.prompt_token_count.unwrap_or(0),
-            completion_tokens: u.candidates_token_count.unwrap_or(0),
-            total_tokens: u.total_token_count.unwrap_or(0),
+            warn!(
+                "Vertex response missing token counts - returning None instead of defaulting to 0"
+            );
+            None
+        } else {
+            Some(Usage {
+                prompt_tokens: u.prompt_token_count.unwrap_or(0),
+                completion_tokens: u.candidates_token_count.unwrap_or(0),
+                total_tokens: u.total_token_count.unwrap_or(0),
+            })
         }
     });
+
+    // Fix timestamp overflow: clamp timestamp to prevent overflow
+    let timestamp = Utc::now().timestamp();
+    let created = timestamp.max(0) as u64;
 
     Ok(ChatCompletionResponse {
         id: request_id,
         object: "chat.completion".to_string(),
-        created: Utc::now().timestamp() as u64,
+        created,
         model,
         choices: vec![ChatCompletionChoice {
             index: candidate.index.unwrap_or(0),
@@ -136,10 +153,14 @@ pub fn transform_stream_chunk(
 
     let finish_reason = candidate.finish_reason.as_ref().map(|s| s.to_lowercase());
 
+    // Fix timestamp overflow: clamp timestamp to prevent overflow
+    let timestamp = Utc::now().timestamp();
+    let created = timestamp.max(0) as u64;
+
     Ok(crate::models::openai::ChatCompletionChunk {
         id: request_id,
         object: "chat.completion.chunk".to_string(),
-        created: Utc::now().timestamp() as u64,
+        created,
         model,
         choices: vec![crate::models::openai::ChatCompletionChunkChoice {
             index: candidate.index.unwrap_or(0),

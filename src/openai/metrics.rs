@@ -10,7 +10,11 @@ fn percentile(sorted_data: &[u64], p: f64) -> u64 {
         return 0;
     }
     let index = (sorted_data.len() as f64 * p / 100.0).ceil() as usize - 1;
-    sorted_data[index.min(sorted_data.len() - 1)]
+    // Fix potential panic: Use get() with bounds checking instead of direct indexing
+    sorted_data
+        .get(index.min(sorted_data.len().saturating_sub(1)))
+        .copied()
+        .unwrap_or_default()
 }
 
 #[derive(Clone, Default, Serialize)]
@@ -113,7 +117,8 @@ impl Metrics {
         let arkose_solves = *self.arkose_solves.read().await;
         let arkose_times = self.arkose_solve_times_ms.read().await;
         let avg_arkose_solve_time_ms = if !arkose_times.is_empty() {
-            arkose_times.iter().sum::<u64>() as f64 / arkose_times.len() as f64
+            // Fix potential overflow: Use checked arithmetic or f64 accumulation
+            arkose_times.iter().map(|&x| x as f64).sum::<f64>() / arkose_times.len() as f64
         } else {
             0.0
         };
@@ -132,7 +137,8 @@ impl Metrics {
         let p95 = percentile(&sorted_durations, 95.0);
         let p99 = percentile(&sorted_durations, 99.0);
         let avg_latency = if !sorted_durations.is_empty() {
-            sorted_durations.iter().sum::<u64>() as f64 / sorted_durations.len() as f64
+            // Fix potential overflow: Use f64 accumulation instead of u64 sum
+            sorted_durations.iter().map(|&x| x as f64).sum::<f64>() / sorted_durations.len() as f64
         } else {
             0.0
         };
