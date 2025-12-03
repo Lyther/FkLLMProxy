@@ -128,12 +128,19 @@ fn parse_bool(value: &str) -> bool {
 }
 
 fn parse_port(value: &str) -> Result<i64, ConfigError> {
-    value.parse::<i64>().map_err(|e| {
+    let port = value.parse::<i64>().map_err(|e| {
         ConfigError::Message(format!(
             "Invalid port value '{}': {}. Port must be a number between 1 and 65535.",
             value, e
         ))
-    })
+    })?;
+    if !(1..=65535).contains(&port) {
+        return Err(ConfigError::Message(format!(
+            "Port value '{}' is out of range. Port must be between 1 and 65535.",
+            port
+        )));
+    }
+    Ok(port)
 }
 
 impl AppConfig {
@@ -200,18 +207,30 @@ impl AppConfig {
             return Err(ConfigError::Message(format!("Validation error: {}", e)));
         }
 
-        if config.auth.require_auth && config.auth.master_key.is_empty() {
-            return Err(ConfigError::Message(
-                "APP_AUTH__MASTER_KEY is required when APP_AUTH__REQUIRE_AUTH=true".into(),
-            ));
+        if config.auth.require_auth {
+            if config.auth.master_key.is_empty() {
+                return Err(ConfigError::Message(
+                    "APP_AUTH__MASTER_KEY is required when APP_AUTH__REQUIRE_AUTH=true".into(),
+                ));
+            }
+            if config.auth.master_key.len() < 16 {
+                return Err(ConfigError::Message(
+                    "APP_AUTH__MASTER_KEY must be at least 16 characters long when APP_AUTH__REQUIRE_AUTH=true".into(),
+                ));
+            }
         }
 
-        if config.vertex.api_key.is_none()
-            && config.vertex.project_id.is_none()
-            && env::var("GOOGLE_APPLICATION_CREDENTIALS").is_err()
-        {
+        let has_credentials_file = config
+            .vertex
+            .credentials_file
+            .as_ref()
+            .map(|f| std::path::Path::new(f).exists())
+            .unwrap_or(false);
+        let has_env_credentials = env::var("GOOGLE_APPLICATION_CREDENTIALS").is_ok();
+
+        if config.vertex.api_key.is_none() && !has_credentials_file && !has_env_credentials {
             return Err(ConfigError::Message(
-                "Missing configuration: Must provide either GOOGLE_API_KEY or (APP_VERTEX__PROJECT_ID + GOOGLE_APPLICATION_CREDENTIALS)".into()
+                "Missing configuration: Must provide either GOOGLE_API_KEY or GOOGLE_APPLICATION_CREDENTIALS or APP_VERTEX__CREDENTIALS_FILE".into()
             ));
         }
 
