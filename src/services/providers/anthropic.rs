@@ -94,10 +94,14 @@ impl LLMProvider for AnthropicBridgeProvider {
             }
         }
 
+        // Fix timestamp overflow: clamp timestamp to prevent overflow
+        let timestamp = chrono::Utc::now().timestamp();
+        let created = timestamp.max(0) as u64;
+
         let response = ChatCompletionResponse {
             id: format!("chatcmpl-{}", request_id),
             object: "chat.completion".to_string(),
-            created: chrono::Utc::now().timestamp() as u64,
+            created,
             model,
             choices: vec![crate::models::openai::ChatCompletionChoice {
                 index: 0,
@@ -280,5 +284,13 @@ mod tests {
         assert!(provider.supports_model("claude-3-5-sonnet"));
         assert!(provider.supports_model("claude-3-opus"));
         assert!(!provider.supports_model("gemini-pro"));
+    }
+
+    #[test]
+    fn test_anthropic_provider_with_state() {
+        let state = create_test_state("http://localhost:4001".to_string());
+        let provider = AnthropicBridgeProvider::new(state.config.anthropic.bridge_url.clone());
+        assert_eq!(provider.provider_type(), Provider::AnthropicCLI);
+        assert!(provider.supports_model("claude-3-5-sonnet"));
     }
 }

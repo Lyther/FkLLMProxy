@@ -412,4 +412,13 @@ mod tests {
         assert!(provider.supports_model("gemini-2.5-flash"));
         assert!(!provider.supports_model("claude-3-5-sonnet"));
     }
+
+    #[test]
+    fn test_vertex_provider_with_state() {
+        let state = create_test_state();
+        let provider = VertexProvider::new();
+        assert_eq!(provider.provider_type(), Provider::Vertex);
+        assert!(provider.supports_model("gemini-pro"));
+        assert_eq!(state.config.vertex.region, "us-central1");
+    }
 }

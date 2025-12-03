@@ -40,7 +40,9 @@ async fn setup_shutdown_signal() {
             }
             _ = async {
                 if let Some(ref mut sigterm) = sigterm {
-                    let _ = sigterm.recv().await;
+                    if sigterm.recv().await.is_none() {
+                        warn!("SIGTERM signal stream closed unexpectedly");
+                    }
                 }
             } => {
                 info!("Received SIGTERM, initiating graceful shutdown");
@@ -61,14 +63,13 @@ async fn setup_shutdown_signal() {
 async fn main() -> anyhow::Result<()> {
     vertex_bridge::services::flags::FeatureFlags::init();
 
-    let config = match AppConfig::new() {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            eprintln!("FATAL: Failed to load configuration: {}", e);
-            eprintln!("Please check your environment variables and configuration.");
-            std::process::exit(1);
-        }
-    };
+    let config = AppConfig::new()
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to load configuration: {}. Please check your environment variables and configuration.",
+                e
+            )
+        })?;
 
     let log_format = config.log.format.as_str();
     let filter =
@@ -130,8 +131,12 @@ async fn main() -> anyhow::Result<()> {
         config.cache.default_ttl_secs,
     ));
 
+    let max_request_size = config.server.max_request_size;
+    let server_host = config.server.host.clone();
+    let server_port = config.server.port;
+
     let state = AppState {
-        config: Arc::new(config.clone()),
+        config: Arc::new(config),
         token_manager,
         provider_registry,
         rate_limiter: rate_limiter.clone(),
@@ -139,8 +144,6 @@ async fn main() -> anyhow::Result<()> {
         metrics,
         cache,
     };
-
-    let max_request_size = config.server.max_request_size;
 
     let public_routes = Router::new().route("/health", get(health::health_check));
 
@@ -172,13 +175,13 @@ async fn main() -> anyhow::Result<()> {
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state);
 
-    let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port)
+    let addr: SocketAddr = format!("{}:{}", server_host, server_port)
         .parse()
         .map_err(|e| {
             anyhow::anyhow!(
                 "Invalid server address {}:{}: {}",
-                config.server.host,
-                config.server.port,
+                server_host,
+                server_port,
                 e
             )
         })?;

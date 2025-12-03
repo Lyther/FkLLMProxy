@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::result::Result;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -80,6 +81,42 @@ pub struct ChatCompletionRequest {
     pub max_tokens: Option<u32>,
     #[serde(default, deserialize_with = "deserialize_stop")]
     pub stop: Option<Vec<String>>,
+}
+
+impl ChatCompletionRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        // Validate model name
+        if self.model.is_empty() {
+            return Err("model field cannot be empty".to_string());
+        }
+
+        // Validate messages
+        if self.messages.is_empty() {
+            return Err("messages field cannot be empty".to_string());
+        }
+
+        // Validate temperature range (0-2)
+        if self.temperature < 0.0 || self.temperature > 2.0 {
+            return Err(format!(
+                "temperature must be between 0 and 2, got {}",
+                self.temperature
+            ));
+        }
+
+        // Validate top_p range (0-1)
+        if self.top_p < 0.0 || self.top_p > 1.0 {
+            return Err(format!("top_p must be between 0 and 1, got {}", self.top_p));
+        }
+
+        // Validate max_tokens
+        if let Some(max) = self.max_tokens {
+            if max == 0 {
+                return Err("max_tokens must be greater than 0".to_string());
+            }
+        }
+
+        Ok(())
+    }
 }
 
 fn default_temperature() -> f32 {

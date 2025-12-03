@@ -13,7 +13,8 @@ pub struct GenerateContentRequest {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Content {
-    pub role: String, // "user" or "model"
+    // Use enum for type safety - valid roles: "user", "model", "system"
+    pub role: String, // "user", "model", or "system"
     pub parts: Vec<Part>,
 }
 
@@ -42,7 +43,10 @@ pub struct GenerationConfig {
 
 #[derive(Debug, Serialize, Clone)]
 pub struct SafetySetting {
+    // TODO: Replace with enum for type safety
+    // Valid categories: HARM_CATEGORY_HARASSMENT, HARM_CATEGORY_HATE_SPEECH, etc.
     pub category: String,
+    // Valid thresholds: BLOCK_NONE, BLOCK_ONLY_HIGH, BLOCK_MEDIUM_AND_ABOVE, BLOCK_LOW_AND_ABOVE
     pub threshold: String,
 }
 

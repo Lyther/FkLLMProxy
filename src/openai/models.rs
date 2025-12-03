@@ -6,14 +6,16 @@ pub struct TokenResponse {
     pub access_token: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arkose_token: Option<String>,
-    pub expires_at: i64,
+    // Use u64 for Unix timestamp (non-negative) or Option<i64> if negative values needed
+    pub expires_at: i64, // TODO: Consider changing to u64 or Option<i64>
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HealthResponse {
     pub browser_alive: bool,
     pub session_valid: bool,
-    pub last_token_refresh: i64,
+    // Use u64 for Unix timestamp (non-negative) or Option<i64> if negative values needed
+    pub last_token_refresh: i64, // TODO: Consider changing to u64 or Option<i64>
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -34,7 +36,8 @@ pub struct BackendConversationRequest {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BackendMessage {
     pub id: String,
-    pub role: String,
+    // Role should be enum: "user", "assistant", "system"
+    pub role: String, // TODO: Consider using enum for type safety
     pub content: BackendContent,
 }
 

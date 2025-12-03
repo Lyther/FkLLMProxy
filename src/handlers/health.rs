@@ -9,13 +9,19 @@ use crate::state::AppState;
 
 const HEALTH_CHECK_TIMEOUT_SECS: u64 = 2;
 const CACHE_CONTROL_NO_CACHE: &str = "no-cache, no-store, must-revalidate";
+const BRIDGE_HEALTH_PATH: &str = "/health";
 
 async fn check_harvester_health(
     config: &std::sync::Arc<crate::config::AppConfig>,
 ) -> serde_json::Value {
     match HarvesterClient::new(config) {
-        Ok(harvester) => match harvester.health_check().await {
-            Ok(health) => {
+        Ok(harvester) => match tokio::time::timeout(
+            Duration::from_secs(HEALTH_CHECK_TIMEOUT_SECS),
+            harvester.health_check(),
+        )
+        .await
+        {
+            Ok(Ok(health)) => {
                 json!({
                     "available": true,
                     "browser_alive": health.browser_alive,
@@ -23,11 +29,21 @@ async fn check_harvester_health(
                     "last_token_refresh": health.last_token_refresh
                 })
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 warn!("Harvester health check failed: {}", e);
                 json!({
                     "available": false,
                     "error": e.to_string()
+                })
+            }
+            Err(_) => {
+                warn!(
+                    "Harvester health check timed out after {} seconds",
+                    HEALTH_CHECK_TIMEOUT_SECS
+                );
+                json!({
+                    "available": false,
+                    "error": format!("Health check timed out after {} seconds", HEALTH_CHECK_TIMEOUT_SECS)
                 })
             }
         },
@@ -59,7 +75,7 @@ async fn check_anthropic_bridge_health(bridge_url: &str) -> serde_json::Value {
         }
     };
 
-    let health_url = format!("{}/health", bridge_url);
+    let health_url = format!("{}{}", bridge_url, BRIDGE_HEALTH_PATH);
 
     match client.get(&health_url).send().await {
         Ok(resp) if resp.status().is_success() => {
@@ -93,13 +109,37 @@ pub async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
     let anthropic_bridge_status =
         check_anthropic_bridge_health(&state.config.anthropic.bridge_url).await;
 
+    let harvester_available = harvester_status
+        .get("available")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let bridge_available = anthropic_bridge_status
+        .get("available")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let overall_status = if harvester_available && bridge_available {
+        "ok"
+    } else if !harvester_available && !bridge_available {
+        "unhealthy"
+    } else {
+        "degraded"
+    };
+
+    let status_code = if overall_status == "ok" {
+        axum::http::StatusCode::OK
+    } else {
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    };
+
     (
+        status_code,
         [(
             axum::http::header::CACHE_CONTROL,
             axum::http::HeaderValue::from_static(CACHE_CONTROL_NO_CACHE),
         )],
         Json(json!({
-            "status": "ok",
+            "status": overall_status,
             "version": env!("CARGO_PKG_VERSION"),
             "timestamp": chrono::Utc::now().to_rfc3339(),
             "harvester": harvester_status,
