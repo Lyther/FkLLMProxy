@@ -87,14 +87,6 @@ impl ProviderRegistry {
     }
 }
 
-pub fn route_provider(model: &str) -> Provider {
-    if model.starts_with("claude-") {
-        Provider::AnthropicCLI
-    } else {
-        Provider::Vertex
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
