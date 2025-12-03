@@ -7,12 +7,12 @@ All notable changes to this project will be documented in this file. See [standa
 ### 🐛 Bug Fixes
 
 * **clippy**: Resolve all clippy warnings ([0f8bf44](https://github.com/Lyther/FkLLMProxy/commit/0f8bf44))
-  - Collapse nested if statements
-  - Remove redundant closures
-  - Remove unnecessary casts
-  - Use Option::map instead of manual implementation
-  - Use cloned() instead of map(|k| k.clone())
-  - Wrap unsafe env var operations in unsafe blocks
+  * Collapse nested if statements
+  * Remove redundant closures
+  * Remove unnecessary casts
+  * Use Option::map instead of manual implementation
+  * Use cloned() instead of map(|k| k.clone())
+  * Wrap unsafe env var operations in unsafe blocks
 
 ### 🔄 Refactoring
 
