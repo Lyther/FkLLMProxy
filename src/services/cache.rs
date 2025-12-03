@@ -18,7 +18,9 @@ struct CachedResponse {
 impl CachedResponse {
     fn is_expired(&self) -> bool {
         let now = Utc::now();
-        let expires_at = self.cached_at + chrono::Duration::seconds(self.ttl_secs as i64);
+        // Fix: Prevent overflow when converting u64 to i64 for chrono::Duration
+        let ttl_secs_i64 = self.ttl_secs.min(i64::MAX as u64) as i64;
+        let expires_at = self.cached_at + chrono::Duration::seconds(ttl_secs_i64);
         now > expires_at
     }
 }
@@ -99,19 +101,25 @@ impl Cache {
             }
         };
 
-        let store = self.store.read().await;
+        // Fix race condition: Use write lock to atomically check and remove expired entry
+        // This prevents entry from being re-inserted between check and cleanup
+        let mut store = self.store.write().await;
 
         if let Some(cached) = store.get(&key) {
             if cached.is_expired() {
                 debug!("Cache miss (expired): {}", key);
+                // Remove expired entry atomically while holding write lock
+                store.remove(&key);
                 drop(store);
-                self.cleanup_expired().await;
                 return None;
             }
             debug!("Cache hit: {}", key);
-            return Some(cached.response.clone());
+            let response = cached.response.clone();
+            drop(store);
+            return Some(response);
         }
 
+        drop(store);
         debug!("Cache miss (not found): {}", key);
         None
     }
@@ -157,16 +165,18 @@ impl Cache {
     }
 
     pub async fn stats(&self) -> CacheStats {
+        // Fix stale stats: cleanup expired entries first, then count
+        // This ensures active_entries calculation is accurate
+        self.cleanup_expired().await;
+
         let store = self.store.read().await;
         let total_entries = store.len();
         let expired_entries = store.values().filter(|v| v.is_expired()).count();
-        drop(store);
-
-        self.cleanup_expired().await;
 
         CacheStats {
             total_entries,
-            active_entries: total_entries - expired_entries,
+            // Fix potential underflow: use saturating_sub to prevent underflow
+            active_entries: total_entries.saturating_sub(expired_entries),
             expired_entries,
             enabled: self.enabled,
         }
@@ -260,11 +270,10 @@ mod tests {
 
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-        // Before cleanup: stats should show expired entries
+        // stats() now cleans up expired entries first, so expired entries should be 0
         let stats = cache.stats().await;
-        // After stats() call, cleanup runs, so total should be 0
-        assert_eq!(stats.total_entries, 5);
-        assert_eq!(stats.expired_entries, 5);
+        assert_eq!(stats.total_entries, 0);
+        assert_eq!(stats.expired_entries, 0);
         assert_eq!(stats.active_entries, 0);
     }
 }

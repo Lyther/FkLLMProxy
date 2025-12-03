@@ -26,6 +26,11 @@ pub struct CircuitBreaker {
 
 impl CircuitBreaker {
     pub fn new(failure_threshold: u32, timeout_secs: u64, success_threshold: u32) -> Self {
+        // Validate parameters to prevent invalid state
+        let failure_threshold = failure_threshold.max(1);
+        let success_threshold = success_threshold.max(1);
+        let timeout_secs = timeout_secs.max(1);
+
         Self {
             state: Arc::new(RwLock::new(CircuitState::Closed)),
             failure_count: Arc::new(RwLock::new(0)),
@@ -42,27 +47,27 @@ impl CircuitBreaker {
         F: std::future::Future<Output = Result<T, E>>,
         E: From<CircuitOpenError>,
     {
+        // Fix race condition: acquire write lock immediately to check and transition atomically
         {
-            let state = *self.state.read().await;
-            if matches!(state, CircuitState::Open) {
+            let mut state_guard = self.state.write().await;
+            if matches!(*state_guard, CircuitState::Open) {
                 let last_failure = *self.last_failure.read().await;
                 if let Some(last) = last_failure {
                     if last.elapsed() >= self.timeout {
-                        let mut state_guard = self.state.write().await;
-                        let mut failure_guard = self.failure_count.write().await;
-                        let mut success_guard = self.success_count.write().await;
-
+                        // Double-check state is still Open before transitioning
                         if matches!(*state_guard, CircuitState::Open) {
                             info!("Circuit breaker: Transitioning to HalfOpen");
                             *state_guard = CircuitState::HalfOpen;
-                            *failure_guard = 0;
-                            *success_guard = 0;
+                            *self.failure_count.write().await = 0;
+                            *self.success_count.write().await = 0;
                         }
                     } else {
+                        drop(state_guard); // Release lock before returning
                         warn!("Circuit breaker: Open, rejecting request");
                         return Err(CircuitOpenError.into());
                     }
                 } else {
+                    drop(state_guard); // Release lock before returning
                     warn!("Circuit breaker: Open, rejecting request");
                     return Err(CircuitOpenError.into());
                 }
@@ -86,9 +91,10 @@ impl CircuitBreaker {
                             *self.failure_count.write().await = 0;
                             *count = 0;
                         }
-                    } else if matches!(current_state, CircuitState::Closed) {
-                        *self.failure_count.write().await = 0;
                     }
+                    // Fix logic bug: Don't reset failure_count on every success in Closed state
+                    // Only reset after sustained success (handled in HalfOpen) or when circuit closes
+                    // This allows failures to accumulate properly
                 }
                 Err(_) => {
                     let mut failure_count = self.failure_count.write().await;
