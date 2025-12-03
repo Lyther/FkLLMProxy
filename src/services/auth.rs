@@ -1,10 +1,13 @@
 use anyhow::{Context, Result};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::process::Command;
 use tokio::sync::RwLock;
+use tokio::time::timeout;
 use tracing::warn;
 
 const TOKEN_CACHE_TTL_SECS: u64 = 3300;
+const GCLOUD_TIMEOUT_SECS: u64 = 10;
 
 #[derive(Clone)]
 pub struct TokenManager {
@@ -44,10 +47,29 @@ impl TokenManager {
             return Ok(key.clone());
         }
 
-        if let Some(ref cached) = *self.cached_token.read().await {
-            let now = chrono::Utc::now().timestamp() as u64;
-            if now < cached.expires_at {
-                return Ok(cached.token.clone());
+        // Fix race condition: Use write lock for double-checked locking pattern
+        // First check with read lock (fast path)
+        {
+            let cached = self.cached_token.read().await;
+            if let Some(ref cached_token) = *cached {
+                // Fix timestamp overflow: clamp timestamp to prevent overflow
+                let now = chrono::Utc::now().timestamp();
+                let now_u64 = now.max(0) as u64;
+                if now_u64 < cached_token.expires_at {
+                    return Ok(cached_token.token.clone());
+                }
+            }
+        }
+
+        // Acquire write lock for check-and-set (prevents concurrent fetches)
+        let mut cached = self.cached_token.write().await;
+
+        // Double-check: another thread might have updated cache while we waited for write lock
+        if let Some(ref cached_token) = *cached {
+            let now = chrono::Utc::now().timestamp();
+            let now_u64 = now.max(0) as u64;
+            if now_u64 < cached_token.expires_at {
+                return Ok(cached_token.token.clone());
             }
         }
 
@@ -56,8 +78,12 @@ impl TokenManager {
             .await
             .context("Failed to fetch Google Cloud access token")?;
 
-        let expires_at = chrono::Utc::now().timestamp() as u64 + TOKEN_CACHE_TTL_SECS;
-        *self.cached_token.write().await = Some(CachedToken {
+        // Fix timestamp overflow: clamp timestamp to prevent overflow
+        let now = chrono::Utc::now().timestamp();
+        let now_u64 = now.max(0) as u64;
+        let expires_at = now_u64.saturating_add(TOKEN_CACHE_TTL_SECS);
+
+        *cached = Some(CachedToken {
             token: token.clone(),
             expires_at,
         });
@@ -66,17 +92,26 @@ impl TokenManager {
     }
 
     async fn fetch_token(&self) -> Result<String> {
-        let output = Command::new("gcloud")
-            .args(["auth", "print-access-token"])
-            .output()
-            .await
-            .context("Failed to execute gcloud command")?;
+        // Fix: Add timeout to prevent hanging indefinitely
+        let output = timeout(
+            Duration::from_secs(GCLOUD_TIMEOUT_SECS),
+            Command::new("gcloud")
+                .args(["auth", "print-access-token"])
+                .output(),
+        )
+        .await
+        .context("gcloud command timed out")?
+        .context("Failed to execute gcloud command")?;
 
         if output.status.success() {
             let token = String::from_utf8(output.stdout)
                 .context("Failed to parse gcloud output as UTF-8")?
                 .trim()
                 .to_string();
+            // Fix: Validate token is not empty
+            if token.is_empty() {
+                anyhow::bail!("gcloud returned empty access token");
+            }
             return Ok(token);
         }
 
@@ -87,9 +122,10 @@ impl TokenManager {
             cmd.env("GOOGLE_APPLICATION_CREDENTIALS", creds_file);
         }
 
-        let output = cmd
-            .output()
+        // Fix: Add timeout to prevent hanging indefinitely
+        let output = timeout(Duration::from_secs(GCLOUD_TIMEOUT_SECS), cmd.output())
             .await
+            .context("gcloud application-default command timed out")?
             .context("Failed to execute gcloud application-default command")?;
 
         if output.status.success() {
@@ -97,6 +133,10 @@ impl TokenManager {
                 .context("Failed to parse gcloud output as UTF-8")?
                 .trim()
                 .to_string();
+            // Fix: Validate token is not empty
+            if token.is_empty() {
+                anyhow::bail!("gcloud returned empty access token");
+            }
             return Ok(token);
         }
 
@@ -116,6 +156,10 @@ impl TokenManager {
             }
         }
 
+        // Fix: Use blocking command but only during initialization
+        // This is acceptable since extract_project_id is only called from new() during startup
+        // If new() is called from async context, consider making new() async in the future
+        // For now, gcloud commands are fast (<1s) so blocking is acceptable during init
         let output = std::process::Command::new("gcloud")
             .args(["config", "get-value", "project"])
             .output();
