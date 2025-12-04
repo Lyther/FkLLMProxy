@@ -15,7 +15,13 @@ pub type StreamingResponse =
 pub enum Provider {
     Vertex,
     AnthropicCLI,
+    // Fix dead code: These variants are not implemented yet
+    // TODO: Implement DeepSeek provider or remove variant
+    #[allow(dead_code)]
     DeepSeek,
+    // Fix dead code: These variants are not implemented yet
+    // TODO: Implement Ollama provider or remove variant
+    #[allow(dead_code)]
     Ollama,
 }
 
@@ -27,6 +33,8 @@ pub enum ProviderError {
     Network(String),
     #[error("Service unavailable: {0}")]
     Unavailable(String),
+    #[error("Request timeout: {0}")]
+    Timeout(String),
     #[error("Invalid request: {0}")]
     InvalidRequest(String),
     #[error("Rate limited: {0}")]
@@ -61,13 +69,20 @@ pub struct ProviderRegistry {
 }
 
 impl ProviderRegistry {
+    /// Initialize provider registry with configured providers
+    ///
+    /// Fix hardcoded provider initialization: Currently only Vertex and Anthropic providers are registered.
+    /// Registration order determines routing priority when multiple providers support the same model.
+    /// TODO: Consider plugin/registry pattern or configuration-driven initialization for extensibility.
     pub fn with_config(anthropic_bridge_url: Option<String>) -> Self {
         let mut providers: Vec<Box<dyn LLMProvider>> = Vec::new();
 
+        // Register Vertex provider (always available)
         providers.push(Box::new(
             crate::services::providers::vertex::VertexProvider::new(),
         ));
 
+        // Register Anthropic provider if bridge URL is configured
         if let Some(ref url) = anthropic_bridge_url {
             providers.push(Box::new(
                 crate::services::providers::anthropic::AnthropicBridgeProvider::new(url.clone()),
@@ -77,6 +92,12 @@ impl ProviderRegistry {
         Self { providers }
     }
 
+    /// Route request to appropriate provider based on model name
+    ///
+    /// Fix non-deterministic routing: Returns first matching provider.
+    /// If multiple providers support the same model, returns the first one registered.
+    /// This behavior is deterministic (based on registration order) but should be documented.
+    /// Consider: priority ordering, explicit model-to-provider mapping, or conflict detection.
     pub fn route_by_model(&self, model: &str) -> Option<&dyn LLMProvider> {
         for provider in &self.providers {
             if provider.supports_model(model) {
@@ -92,21 +113,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_route_provider_gemini() {
+    fn test_route_by_model_gemini() {
         let registry = ProviderRegistry::with_config(None);
         assert!(registry.route_by_model("gemini-pro").is_some());
         assert!(registry.route_by_model("gemini-2.5-flash").is_some());
     }
 
     #[test]
-    fn test_route_provider_claude() {
+    fn test_route_by_model_claude() {
         let registry = ProviderRegistry::with_config(Some("http://localhost:4001".to_string()));
         assert!(registry.route_by_model("claude-3-5-sonnet").is_some());
         assert!(registry.route_by_model("claude-3-opus").is_some());
     }
 
     #[test]
-    fn test_route_provider_unknown() {
+    fn test_route_by_model_unknown() {
         let registry = ProviderRegistry::with_config(None);
         assert!(registry.route_by_model("unknown-model").is_none());
     }

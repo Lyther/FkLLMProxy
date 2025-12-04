@@ -147,7 +147,7 @@ impl LLMProvider for VertexProvider {
 
         let res = req_builder.send().await.map_err(|e| {
             if e.is_timeout() {
-                ProviderError::Unavailable(format!(
+                ProviderError::Timeout(format!(
                     "Vertex API request timeout (model: {}, request_id: {}): {}",
                     request.model, request_id, e
                 ))
@@ -228,7 +228,7 @@ impl LLMProvider for VertexProvider {
 
         let res = req_builder.send().await.map_err(|e| {
             if e.is_timeout() {
-                ProviderError::Unavailable(format!(
+                ProviderError::Timeout(format!(
                     "Vertex API request timeout (model: {}, request_id: {}): {}",
                     request.model, request_id, e
                 ))

@@ -11,10 +11,12 @@ pub struct GenerateContentRequest {
     pub safety_settings: Option<Vec<SafetySetting>>,
 }
 
+// Fix: Document all valid role values for type safety
+// Valid roles per Vertex AI API: "user", "model", "system"
+// TODO: Consider using enum for type safety: enum Role { User, Model, System ]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Content {
-    // Use enum for type safety - valid roles: "user", "model", "system"
-    pub role: String, // "user", "model", or "system"
+    pub role: String, // Valid values: "user", "model", "system"
     pub parts: Vec<Part>,
 }
 
@@ -23,7 +25,8 @@ pub struct Content {
 pub struct Part {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
-    // Add inlineData or fileData later for images
+    // TODO: Add inlineData or fileData for multimodal support (images, etc.)
+    // This is tracked as a feature limitation - multimodal content not yet supported
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -41,13 +44,14 @@ pub struct GenerationConfig {
     pub candidate_count: Option<u32>,
 }
 
+// Fix: Document valid values for type safety
+// TODO: Replace with enum for type safety and validation
+// Valid categories: HARM_CATEGORY_HARASSMENT, HARM_CATEGORY_HATE_SPEECH, HARM_CATEGORY_SEXUALLY_EXPLICIT, HARM_CATEGORY_DANGEROUS_CONTENT
+// Valid thresholds: BLOCK_NONE, BLOCK_ONLY_HIGH, BLOCK_MEDIUM_AND_ABOVE, BLOCK_LOW_AND_ABOVE
 #[derive(Debug, Serialize, Clone)]
 pub struct SafetySetting {
-    // TODO: Replace with enum for type safety
-    // Valid categories: HARM_CATEGORY_HARASSMENT, HARM_CATEGORY_HATE_SPEECH, etc.
-    pub category: String,
-    // Valid thresholds: BLOCK_NONE, BLOCK_ONLY_HIGH, BLOCK_MEDIUM_AND_ABOVE, BLOCK_LOW_AND_ABOVE
-    pub threshold: String,
+    pub category: String,  // See TODO above for valid values
+    pub threshold: String, // See TODO above for valid values
 }
 
 // Responses

@@ -34,15 +34,23 @@ where
     match content {
         Content::String(s) => Ok(s),
         Content::Array(arr) => {
+            // Fix content deserialization limitation: Document that we only support text content
+            // Multimodal content (images, etc.) is not supported - only extracts "text" fields
+            // This is a known limitation of the current implementation
             let parts: Vec<String> = arr
                 .into_iter()
                 .filter_map(|v| {
+                    // Extract text field if present (for text content)
                     v.get("text")
                         .and_then(|t| t.as_str())
                         .map(|s| s.to_string())
+                        // Fallback: if value is a string, use it directly
                         .or_else(|| v.as_str().map(|s| s.to_string()))
                 })
                 .collect();
+            // Fix: Document that joining with "\n" may not be correct for all content types
+            // For text-only content, newline separator is appropriate
+            // For multimodal content, this would lose structure - limitation documented
             Ok(parts.join("\n"))
         }
     }
