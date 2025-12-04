@@ -127,25 +127,32 @@ fn parse_bool(value: &str) -> bool {
     matches!(lower.as_str(), "true" | "1" | "yes" | "on")
 }
 
-fn parse_port(value: &str) -> Result<i64, ConfigError> {
-    let port = value.parse::<i64>().map_err(|e| {
+fn parse_port(value: &str) -> Result<u16, ConfigError> {
+    // Parse as i64 first to catch negative numbers
+    let port_i64 = value.parse::<i64>().map_err(|e| {
         ConfigError::Message(format!(
             "Invalid port value '{}': {}. Port must be a number between 1 and 65535.",
             value, e
         ))
     })?;
-    if !(1..=65535).contains(&port) {
+
+    // Explicitly validate range before conversion to u16
+    if !(1..=65535).contains(&port_i64) {
         return Err(ConfigError::Message(format!(
             "Port value '{}' is out of range. Port must be between 1 and 65535.",
-            port
+            port_i64
         )));
     }
-    Ok(port)
+
+    // Safe to convert: we've validated the range
+    Ok(port_i64 as u16)
 }
 
 impl AppConfig {
     pub fn new() -> Result<Self, ConfigError> {
-        dotenvy::dotenv().ok();
+        if let Err(e) = dotenvy::dotenv() {
+            tracing::debug!("Failed to load .env file (this is optional): {}", e);
+        }
 
         let s = Config::builder()
             .set_default("server.host", "127.0.0.1")?

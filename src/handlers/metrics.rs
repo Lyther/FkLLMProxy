@@ -9,15 +9,47 @@ use axum::{
 const CACHE_CONTROL_NO_CACHE: &str = "no-cache, no-store, must-revalidate";
 const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
+fn validate_metric_name(name: &str) -> String {
+    // Prometheus metric names must match [a-zA-Z_:][a-zA-Z0-9_:]*
+    // Replace invalid characters with underscores
+    name.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' || c == ':' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn validate_metric_type(metric_type: &str) -> &str {
+    // Valid Prometheus metric types: counter, gauge, histogram, summary
+    match metric_type {
+        "counter" | "gauge" | "histogram" | "summary" => metric_type,
+        _ => {
+            tracing::warn!(
+                "Invalid Prometheus metric type: {}, defaulting to 'gauge'",
+                metric_type
+            );
+            "gauge"
+        }
+    }
+}
+
 fn format_prometheus_metric(
     name: &str,
     help: &str,
     metric_type: &str,
     value: impl std::fmt::Display,
 ) -> String {
+    // Fix: Validate inputs to prevent malformed Prometheus output
+    let validated_name = validate_metric_name(name);
+    let validated_type = validate_metric_type(metric_type);
+
     format!(
         "# HELP {} {}\n# TYPE {} {}\n{} {}\n",
-        name, help, name, metric_type, name, value
+        validated_name, help, validated_name, validated_type, validated_name, value
     )
 }
 
@@ -166,10 +198,17 @@ pub async fn prometheus_metrics_handler(State(state): State<AppState>) -> Respon
         Ok(response) => response,
         Err(e) => {
             tracing::error!("Failed to build Prometheus metrics response: {}", e);
+            // Fix double unwrap_or_else: Use proper error handling
             Response::builder()
                 .status(500)
                 .body("Internal server error".into())
-                .unwrap_or_else(|_| Response::new("Internal server error".into()))
+                .unwrap_or_else(|build_err| {
+                    tracing::error!("Failed to build error response: {}", build_err);
+                    // Last resort: create minimal response
+                    let mut response = Response::new("Internal server error".into());
+                    *response.status_mut() = axum::http::StatusCode::INTERNAL_SERVER_ERROR;
+                    response
+                })
         }
     }
 }

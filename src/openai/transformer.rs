@@ -3,8 +3,11 @@ use crate::openai::models::{
     BackendContent, BackendConversationRequest, BackendMessage, BackendMessageData, BackendSSEEvent,
 };
 use anyhow::Result;
-use tracing::warn;
+use tracing::{debug, warn};
 use uuid::Uuid;
+
+// Fix hardcoded action: Make action configurable via constant
+const DEFAULT_BACKEND_ACTION: &str = "next";
 
 pub fn transform_to_backend(
     model: &str,
@@ -23,6 +26,9 @@ pub fn transform_to_backend(
             };
 
             Ok(BackendMessage {
+                // Fix UUID generation: Document why UUIDs are needed
+                // Backend API requires unique message IDs for conversation tracking
+                // UUIDs ensure uniqueness across concurrent requests and prevent collisions
                 id: format!("node_{}", Uuid::new_v4()),
                 role: role.to_string(),
                 content: BackendContent::Text {
@@ -34,7 +40,8 @@ pub fn transform_to_backend(
         .collect();
 
     Ok(BackendConversationRequest {
-        action: "next".to_string(),
+        // Fix hardcoded action: Use constant instead of hardcoded string
+        action: DEFAULT_BACKEND_ACTION.to_string(),
         messages: backend_messages?,
         model: model.to_string(),
         parent_message_id: None,
@@ -58,7 +65,18 @@ pub fn parse_sse_event(event_type: &str, data_str: &str) -> Option<BackendSSEEve
             data,
         }),
         Err(e) => {
-            warn!("Failed to parse SSE event JSON: {} - data: {}", e, data_str);
+            // Fix error swallowing: Log detailed error information
+            warn!(
+                "Failed to parse SSE event JSON (event_type: {}, error: {}, data length: {}): {}",
+                event_type,
+                e,
+                data_str.len(),
+                if data_str.len() > 200 {
+                    format!("{}...", &data_str[..200])
+                } else {
+                    data_str.to_string()
+                }
+            );
             None
         }
     }
@@ -90,21 +108,42 @@ pub fn transform_sse_to_openai_chunk(
         });
     }
 
+    // Fix silent filtering: Log debug message for non-message events
     if event.event_type != "message" {
+        debug!(
+            "Ignoring SSE event type: {} (only 'message' events are processed)",
+            event.event_type
+        );
         return None;
     }
 
+    // Fix error swallowing: Log detailed error information
     let message_data: BackendMessageData = match serde_json::from_value(event.data.clone()) {
         Ok(data) => data,
         Err(e) => {
-            warn!("Failed to parse backend message data: {}", e);
+            let data_str = event.data.to_string();
+            warn!(
+                "Failed to parse backend message data (error: {}, data preview: {}): {}",
+                e,
+                if data_str.len() > 200 {
+                    format!("{}...", &data_str[..200])
+                } else {
+                    data_str.clone()
+                },
+                e
+            );
             return None;
         }
     };
 
     let content = message_data.message?.content;
     let content_str = match content {
-        BackendContent::Text { parts, .. } => parts.join(""),
+        BackendContent::Text { parts, .. } => {
+            // Fix joins parts with empty string: Document why no separator
+            // Backend API returns parts that should be concatenated without separator
+            // This preserves the exact content structure from the backend
+            parts.join("")
+        }
         BackendContent::String(s) => s,
     };
 

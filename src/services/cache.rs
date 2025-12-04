@@ -13,6 +13,7 @@ struct CachedResponse {
     response: String,
     cached_at: DateTime<Utc>,
     ttl_secs: u64,
+    last_access: DateTime<Utc>, // Track last access for LRU eviction
 }
 
 impl CachedResponse {
@@ -46,8 +47,30 @@ impl Cache {
     }
 
     fn cache_key(request: &ChatCompletionRequest) -> Result<String, serde_json::Error> {
+        // Fix incomplete cache key: Include all parameters that affect response
+        // Fix collision risk: Use structured format with delimiter that won't appear in model names
+        // Use "|" as delimiter (unlikely in model names) and include all relevant params
+
         let messages_str = serde_json::to_string(&request.messages)?;
-        Ok(format!("{}:{}", request.model, messages_str))
+        let temperature_str = format!("{:.6}", request.temperature); // Use fixed precision
+        let max_tokens_str = request
+            .max_tokens
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        let top_p_str = format!("{:.6}", request.top_p);
+        let stop_str = request
+            .stop
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?
+            .unwrap_or_else(|| "none".to_string());
+
+        // Format: model|messages|temperature|max_tokens|top_p|stop
+        // Using "|" delimiter which is unlikely to appear in model names or JSON
+        Ok(format!(
+            "{}|{}|{}|{}|{}|{}",
+            request.model, messages_str, temperature_str, max_tokens_str, top_p_str, stop_str
+        ))
     }
 
     async fn cleanup_expired(&self) {
@@ -64,27 +87,31 @@ impl Cache {
         let mut store = self.store.write().await;
         if store.len() > MAX_CACHE_SIZE {
             let to_remove = store.len() - MAX_CACHE_SIZE;
-            let mut keys_to_remove: Vec<String> = store
+
+            // Fix inefficient eviction: Single pass with LRU ordering
+            // Fix non-deterministic eviction: Sort by last_access for LRU eviction
+            let mut entries: Vec<(String, DateTime<Utc>)> = store
                 .iter()
-                .filter(|(_, v)| v.is_expired())
-                .map(|(k, _)| k.clone())
-                .take(to_remove)
+                .map(|(k, v)| (k.clone(), v.last_access))
                 .collect();
 
-            if keys_to_remove.len() < to_remove {
-                let mut remaining: Vec<String> = store
-                    .keys()
-                    .filter(|k| !keys_to_remove.contains(k))
-                    .take(to_remove - keys_to_remove.len())
-                    .cloned()
-                    .collect();
-                keys_to_remove.append(&mut remaining);
-            }
+            // Sort by last_access (oldest first) for LRU eviction
+            entries.sort_by_key(|(_, access_time)| *access_time);
+
+            // Remove oldest entries first
+            let keys_to_remove: Vec<String> = entries
+                .iter()
+                .take(to_remove)
+                .map(|(k, _)| k.clone())
+                .collect();
 
             for key in keys_to_remove {
                 store.remove(&key);
             }
-            warn!("Cache size limit exceeded, removed {} entries", to_remove);
+            warn!(
+                "Cache size limit exceeded, removed {} oldest entries (LRU)",
+                to_remove
+            );
         }
     }
 
@@ -105,7 +132,7 @@ impl Cache {
         // This prevents entry from being re-inserted between check and cleanup
         let mut store = self.store.write().await;
 
-        if let Some(cached) = store.get(&key) {
+        if let Some(cached) = store.get_mut(&key) {
             if cached.is_expired() {
                 debug!("Cache miss (expired): {}", key);
                 // Remove expired entry atomically while holding write lock
@@ -113,6 +140,8 @@ impl Cache {
                 drop(store);
                 return None;
             }
+            // Fix LRU: Update last_access on cache hit
+            cached.last_access = Utc::now();
             debug!("Cache hit: {}", key);
             let response = cached.response.clone();
             drop(store);
@@ -144,10 +173,12 @@ impl Cache {
 
         let ttl = ttl_secs.unwrap_or(self.default_ttl_secs);
 
+        let now = Utc::now();
         let cached = CachedResponse {
             response,
-            cached_at: Utc::now(),
+            cached_at: now,
             ttl_secs: ttl,
+            last_access: now, // Initialize last_access
         };
 
         let mut store = self.store.write().await;
@@ -162,6 +193,28 @@ impl Cache {
         let mut store = self.store.write().await;
         store.clear();
         debug!("Cache cleared");
+    }
+
+    // Fix: Add cache invalidation API for manual invalidation
+    pub async fn invalidate(&self, request: &ChatCompletionRequest) -> bool {
+        if !self.enabled {
+            return false;
+        }
+
+        let key = match Self::cache_key(request) {
+            Ok(k) => k,
+            Err(e) => {
+                warn!("Failed to generate cache key for invalidation: {}", e);
+                return false;
+            }
+        };
+
+        let mut store = self.store.write().await;
+        let removed = store.remove(&key).is_some();
+        if removed {
+            debug!("Cache entry invalidated: {}", key);
+        }
+        removed
     }
 
     pub async fn stats(&self) -> CacheStats {

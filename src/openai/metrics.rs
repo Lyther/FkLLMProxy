@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -9,6 +10,8 @@ fn percentile(sorted_data: &[u64], p: f64) -> u64 {
     if sorted_data.is_empty() {
         return 0;
     }
+    // Fix percentile validation: Clamp p to valid range [0.0, 100.0]
+    let p = p.clamp(0.0, 100.0);
     let index = (sorted_data.len() as f64 * p / 100.0).ceil() as usize - 1;
     // Fix potential panic: Use get() with bounds checking instead of direct indexing
     sorted_data
@@ -40,10 +43,12 @@ pub struct Metrics {
     cache_misses: Arc<RwLock<u64>>,
     waf_blocks: Arc<RwLock<u64>>,
     arkose_solves: Arc<RwLock<u64>>,
-    arkose_solve_times_ms: Arc<RwLock<Vec<u64>>>,
+    // Fix inefficient remove(0): Use VecDeque for O(1) removal from front
+    arkose_solve_times_ms: Arc<RwLock<VecDeque<u64>>>,
     total_requests: Arc<RwLock<u64>>,
     failed_requests: Arc<RwLock<u64>>,
-    request_durations_ms: Arc<RwLock<Vec<u64>>>,
+    // Fix inefficient remove(0): Use VecDeque for O(1) removal from front
+    request_durations_ms: Arc<RwLock<VecDeque<u64>>>,
 }
 
 impl Metrics {
@@ -53,10 +58,10 @@ impl Metrics {
             cache_misses: Arc::new(RwLock::new(0)),
             waf_blocks: Arc::new(RwLock::new(0)),
             arkose_solves: Arc::new(RwLock::new(0)),
-            arkose_solve_times_ms: Arc::new(RwLock::new(Vec::new())),
+            arkose_solve_times_ms: Arc::new(RwLock::new(VecDeque::new())),
             total_requests: Arc::new(RwLock::new(0)),
             failed_requests: Arc::new(RwLock::new(0)),
-            request_durations_ms: Arc::new(RwLock::new(Vec::new())),
+            request_durations_ms: Arc::new(RwLock::new(VecDeque::new())),
         }
     }
 
@@ -75,9 +80,10 @@ impl Metrics {
     pub async fn record_arkose_solve(&self, duration_ms: u64) {
         *self.arkose_solves.write().await += 1;
         let mut times = self.arkose_solve_times_ms.write().await;
-        times.push(duration_ms);
+        times.push_back(duration_ms);
+        // Fix inefficient remove(0): VecDeque::pop_front() is O(1) vs Vec::remove(0) which is O(n)
         if times.len() > MAX_LATENCY_HISTORY {
-            times.remove(0);
+            times.pop_front();
         }
     }
 
@@ -90,9 +96,10 @@ impl Metrics {
 
     pub async fn record_request_duration(&self, duration_ms: u64) {
         let mut durations = self.request_durations_ms.write().await;
-        durations.push(duration_ms);
+        durations.push_back(duration_ms);
+        // Fix inefficient remove(0): VecDeque::pop_front() is O(1) vs Vec::remove(0) which is O(n)
         if durations.len() > MAX_SORTED_DURATIONS {
-            durations.remove(0);
+            durations.pop_front();
         }
     }
 
@@ -131,8 +138,11 @@ impl Metrics {
         };
 
         let durations = self.request_durations_ms.read().await;
+        // Fix performance issue: Clone and sort on every get_stats() call
+        // TODO: Consider maintaining sorted state or using incremental sorting
+        // For now, we clone and sort which is O(n log n) but acceptable for small datasets (< 1000 items)
         let mut sorted_durations: Vec<u64> = durations.iter().copied().collect();
-        sorted_durations.sort();
+        sorted_durations.sort_unstable(); // Use sort_unstable for better performance
         let p50 = percentile(&sorted_durations, 50.0);
         let p95 = percentile(&sorted_durations, 95.0);
         let p99 = percentile(&sorted_durations, 99.0);

@@ -6,7 +6,6 @@ use crate::models::{
     vertex::{Content, GenerateContentRequest, GenerateContentResponse, GenerationConfig, Part},
 };
 use anyhow::Result;
-use chrono::Utc;
 use tracing::warn;
 
 pub fn transform_request(req: ChatCompletionRequest) -> Result<GenerateContentRequest> {
@@ -93,13 +92,15 @@ pub fn transform_response(
 
     let finish_reason = candidate.finish_reason.as_ref().map(|s| s.to_lowercase());
 
+    // Fix error swallowing: Log detailed error information instead of silently continuing
     let usage = vertex_res.usage_metadata.as_ref().and_then(|u| {
         if u.prompt_token_count.is_none()
             || u.candidates_token_count.is_none()
             || u.total_token_count.is_none()
         {
             warn!(
-                "Vertex response missing token counts - returning None instead of defaulting to 0"
+                "Vertex response missing token counts (prompt: {:?}, candidates: {:?}, total: {:?}) - returning None. This may indicate API contract violation.",
+                u.prompt_token_count, u.candidates_token_count, u.total_token_count
             );
             None
         } else {
@@ -111,8 +112,11 @@ pub fn transform_response(
         }
     });
 
-    // Fix timestamp overflow: clamp timestamp to prevent overflow
-    let timestamp = Utc::now().timestamp();
+    // Fix: Use SystemTime instead of chrono for timestamp
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
     let created = timestamp.max(0) as u64;
 
     Ok(ChatCompletionResponse {
@@ -153,8 +157,11 @@ pub fn transform_stream_chunk(
 
     let finish_reason = candidate.finish_reason.as_ref().map(|s| s.to_lowercase());
 
-    // Fix timestamp overflow: clamp timestamp to prevent overflow
-    let timestamp = Utc::now().timestamp();
+    // Fix: Use SystemTime instead of chrono for timestamp
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
     let created = timestamp.max(0) as u64;
 
     Ok(crate::models::openai::ChatCompletionChunk {

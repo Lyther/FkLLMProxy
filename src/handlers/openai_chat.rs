@@ -61,9 +61,10 @@ fn process_stream_chunk(
                 Ok(e) => return Ok(e),
                 Err(e) => {
                     error!("Failed to serialize SSE chunk: {}", e);
-                    return Ok(
+                    return Ok({
+                        error!("Failed to serialize SSE chunk: {}", e);
                         Event::default().comment(format!("error: serialization failed: {}", e))
-                    );
+                    });
                 }
             }
         }
@@ -179,10 +180,16 @@ pub async fn openai_chat_completions(
                             "code": "stream_failed"
                         }
                     });
+                    // Fix error swallowing: Log serialization errors instead of silently converting to comment
                     match Event::default().json_data(error_chunk) {
                         Ok(event) => Ok(event),
-                        Err(_) => {
-                            Ok(Event::default().comment(format!("error: stream failed: {}", e)))
+                        Err(serialize_err) => {
+                            error!("Failed to serialize error chunk: {}", serialize_err);
+                            // Return error event as comment only as last resort, but log the real error
+                            Ok(Event::default().comment(format!(
+                                "error: stream failed: {} (serialization error: {})",
+                                e, serialize_err
+                            )))
                         }
                     }
                 }
@@ -231,7 +238,12 @@ pub async fn openai_chat_completions(
         };
 
     // Fix timestamp overflow: clamp timestamp to prevent overflow
-    let timestamp = chrono::Utc::now().timestamp();
+    // Fix: Use SystemTime instead of chrono for timestamp
+    // RFC3339 format requires chrono, but Unix timestamp can use SystemTime
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
     let created = timestamp.max(0) as u64;
 
     let response = ChatCompletionResponse {
@@ -252,9 +264,6 @@ pub async fn openai_chat_completions(
     };
 
     // Fix: Prevent overflow when converting duration to milliseconds
-    let duration_ms = request_start.elapsed().as_millis().min(u64::MAX as u128) as u64;
-    state.metrics.record_request(true).await;
-    state.metrics.record_request_duration(duration_ms).await;
     let duration_ms = request_start.elapsed().as_millis().min(u64::MAX as u128) as u64;
     state.metrics.record_request(true).await;
     state.metrics.record_request_duration(duration_ms).await;

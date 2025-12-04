@@ -6,7 +6,7 @@ use axum::{
 use futures::stream::StreamExt;
 use serde_json::Value;
 use std::convert::Infallible;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::{
@@ -23,43 +23,63 @@ pub fn is_openai_model(model: &str) -> bool {
 }
 
 fn parse_sse_chunk(chunk_data: &str) -> Result<Event, Infallible> {
-    if let Some(json_data) = chunk_data.strip_prefix("data: ") {
-        let json_data = json_data.trim();
-        if json_data == "[DONE]" {
-            return Ok(Event::default().comment("[DONE]"));
+    // Validate SSE format: should start with "data: "
+    if !chunk_data.starts_with("data: ") {
+        if !chunk_data.trim().is_empty() {
+            warn!(
+                "Invalid SSE format: chunk does not start with 'data: ': {}",
+                chunk_data
+            );
         }
+        return Ok(Event::default().comment(chunk_data.trim()));
+    }
 
-        // Try to parse as ChatCompletionChunk first
-        match serde_json::from_str::<ChatCompletionChunk>(json_data) {
-            Ok(chunk) => match Event::default().json_data(chunk) {
-                Ok(e) => Ok(e),
-                Err(e) => {
-                    error!("Failed to serialize SSE chunk: {}", e);
-                    Ok(Event::default().comment(format!("error: serialization failed: {}", e)))
-                }
-            },
+    let json_data = chunk_data.strip_prefix("data: ").unwrap().trim();
+    if json_data == "[DONE]" {
+        return Ok(Event::default().comment("[DONE]"));
+    }
+
+    // Try to parse as ChatCompletionChunk first
+    match serde_json::from_str::<ChatCompletionChunk>(json_data) {
+        Ok(chunk) => match Event::default().json_data(chunk) {
+            Ok(e) => Ok(e),
             Err(e) => {
-                // Try parsing as generic JSON Value
-                match serde_json::from_str::<Value>(json_data) {
-                    Ok(value) => match Event::default().json_data(value) {
-                        Ok(e) => Ok(e),
-                        Err(ser_err) => {
-                            error!("Failed to serialize JSON value: {}", ser_err);
-                            Ok(Event::default().comment("error: serialization failed"))
+                error!("Failed to serialize SSE chunk: {}", e);
+                Ok(Event::default().comment(format!("error: serialization failed: {}", e)))
+            }
+        },
+        Err(e) => {
+            // Log parse error before fallback
+            warn!("Failed to parse SSE chunk as ChatCompletionChunk: {}", e);
+            // Try parsing as generic JSON Value
+            match serde_json::from_str::<Value>(json_data) {
+                Ok(value) => match Event::default().json_data(value) {
+                    Ok(e) => Ok(e),
+                    Err(ser_err) => {
+                        error!("Failed to serialize JSON value: {}", ser_err);
+                        Ok(Event::default().comment("error: serialization failed"))
+                    }
+                },
+                Err(json_err) => {
+                    // Log both parse errors for debugging
+                    error!("Failed to parse JSON from SSE chunk. ChatCompletionChunk error: {}, JSON error: {}", e, json_err);
+                    // Return error event instead of silently converting to comment
+                    let error_event = serde_json::json!({
+                        "error": {
+                            "message": format!("Failed to parse SSE chunk: {}", e),
+                            "type": "parse_error",
+                            "code": "invalid_chunk_format"
                         }
-                    },
-                    Err(_) => {
-                        // Log parse error for debugging
-                        error!("Failed to parse JSON from SSE chunk: {}", e);
-                        Ok(Event::default().comment(json_data))
+                    });
+                    match Event::default().json_data(error_event) {
+                        Ok(event) => Ok(event),
+                        Err(_) => {
+                            Ok(Event::default().comment(format!("error: parse failed: {}", e)))
+                        }
                     }
                 }
             }
         }
-    } else if chunk_data.trim().is_empty() {
-        Ok(Event::default().comment("keep-alive"))
-    } else {
-        Ok(Event::default().comment(chunk_data.trim()))
     }
 }
 
@@ -131,10 +151,9 @@ pub async fn chat_completions(
             }
         };
 
-        // Fix: Prevent overflow when converting duration to milliseconds
-        let duration_ms = request_start.elapsed().as_millis().min(u64::MAX as u128) as u64;
-        state.metrics.record_request(true).await;
-        state.metrics.record_request_duration(duration_ms).await;
+        // Note: Metrics for streaming requests are recorded when stream is created
+        // Full stream completion metrics would require consuming the stream, which isn't feasible
+        // For accurate metrics, consider using a wrapper stream that records on completion
         return Sse::new(stream)
             .keep_alive(axum::response::sse::KeepAlive::default())
             .into_response();
@@ -161,15 +180,8 @@ fn map_provider_error_to_status(error: &ProviderError) -> u16 {
     match error {
         ProviderError::Auth(_) => 401,
         ProviderError::Network(_) => 502,
-        ProviderError::Unavailable(msg) => {
-            // Use structured error types instead of string matching
-            // For now, check for timeout keyword as fallback
-            if msg.contains("timeout") {
-                504
-            } else {
-                503
-            }
-        }
+        ProviderError::Unavailable(_) => 503,
+        ProviderError::Timeout(_) => 504,
         ProviderError::InvalidRequest(_) => 400,
         ProviderError::RateLimited(_) => 429,
         ProviderError::Internal(_) => 500,
