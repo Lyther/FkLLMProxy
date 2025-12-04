@@ -1,12 +1,21 @@
 // @critical: E2E provider tests with real APIs
 // These tests verify end-to-end functionality with actual provider APIs
+//
+// To run E2E tests: FORCE_E2E_TESTS=1 cargo test --test integration -- --ignored
 
 use super::test_utils::{
-    create_chat_request, create_simple_message, credential_status, should_run_e2e, TestServer,
+    create_chat_request, create_simple_message, credential_status, has_real_credentials,
+    should_run_e2e, TestServer,
 };
 use axum::body::to_bytes;
 use axum::http::StatusCode;
 use serde_json::Value;
+
+/// Reasonable body size limit for tests (1MB)
+const TEST_BODY_LIMIT: usize = 1024 * 1024;
+/// Model name constants
+const GEMINI_MODEL: &str = "gemini-2.5-flash";
+const CLAUDE_MODEL: &str = "claude-3-5-sonnet";
 
 /// Check if Anthropic credentials are available
 fn has_anthropic_credentials() -> bool {
@@ -15,16 +24,13 @@ fn has_anthropic_credentials() -> bool {
         || std::env::var("APP_ANTHROPIC__BRIDGE_URL").is_ok()
 }
 
-/// Check if Vertex credentials are available
+/// Check if Vertex credentials are available - reuses has_real_credentials from test_utils
 fn has_vertex_credentials() -> bool {
-    std::env::var("VERTEX_API_KEY").is_ok()
-        || std::env::var("GOOGLE_APPLICATION_CREDENTIALS").is_ok()
-        || (std::env::var("GOOGLE_CLOUD_PROJECT").is_ok()
-            && std::env::var("GOOGLE_APPLICATION_CREDENTIALS").is_ok())
+    has_real_credentials()
 }
 
 #[tokio::test]
-#[ignore] // Requires real Vertex API credentials
+#[ignore] // Requires real Vertex API credentials - run with FORCE_E2E_TESTS=1
 async fn test_vertex_e2e_non_streaming() {
     if !has_vertex_credentials() {
         eprintln!("⏭️  Skipping Vertex E2E test: {}", credential_status());
@@ -34,7 +40,7 @@ async fn test_vertex_e2e_non_streaming() {
     let server = TestServer::new();
 
     let request_body = create_chat_request(
-        "gemini-2.5-flash",
+        GEMINI_MODEL,
         &create_simple_message("user", "Say hello in one word"),
         false,
     );
@@ -45,22 +51,33 @@ async fn test_vertex_e2e_non_streaming() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let body = response.into_body();
-    let body_bytes = to_bytes(body, usize::MAX).await.unwrap();
-    let json: Value = serde_json::from_slice(&body_bytes).unwrap();
+    let body_bytes = to_bytes(body, TEST_BODY_LIMIT)
+        .await
+        .expect("Failed to read Vertex response body");
+    let json: Value =
+        serde_json::from_slice(&body_bytes).expect("Vertex response is not valid JSON");
 
     assert_eq!(json["object"], "chat.completion");
-    assert!(json.get("id").is_some());
-    assert_eq!(json["model"], "gemini-2.5-flash");
-    assert!(json.get("choices").is_some());
+    assert!(json.get("id").is_some(), "Response missing 'id' field");
+    assert_eq!(json["model"], GEMINI_MODEL);
+    assert!(
+        json.get("choices").is_some(),
+        "Response missing 'choices' field"
+    );
 
-    let choices = json["choices"].as_array().unwrap();
-    assert!(!choices.is_empty());
+    let choices = json["choices"]
+        .as_array()
+        .expect("choices field is not an array");
+    assert!(!choices.is_empty(), "choices array should not be empty");
     assert_eq!(choices[0]["message"]["role"], "assistant");
-    assert!(choices[0]["message"].get("content").is_some());
+    assert!(
+        choices[0]["message"].get("content").is_some(),
+        "Message missing 'content' field"
+    );
 }
 
 #[tokio::test]
-#[ignore] // Requires real Vertex API credentials
+#[ignore] // Requires real Vertex API credentials - run with FORCE_E2E_TESTS=1
 async fn test_vertex_e2e_streaming() {
     if !has_vertex_credentials() {
         eprintln!(
@@ -73,7 +90,7 @@ async fn test_vertex_e2e_streaming() {
     let server = TestServer::new();
 
     let request_body = create_chat_request(
-        "gemini-2.5-flash",
+        GEMINI_MODEL,
         &create_simple_message("user", "Count to 3"),
         true,
     );
@@ -82,26 +99,33 @@ async fn test_vertex_e2e_streaming() {
     let response = server.call(req).await;
 
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response
-            .headers()
-            .get("content-type")
-            .unwrap()
-            .to_str()
-            .unwrap(),
-        "text/event-stream"
-    );
+
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .expect("Streaming response should have content-type header")
+        .to_str()
+        .expect("Content-type header should be valid UTF-8");
+    assert_eq!(content_type, "text/event-stream");
 
     let body = response.into_body();
-    let body_bytes = to_bytes(body, usize::MAX).await.unwrap();
+    let body_bytes = to_bytes(body, TEST_BODY_LIMIT)
+        .await
+        .expect("Failed to read Vertex streaming response body");
     let body_str = String::from_utf8_lossy(&body_bytes);
 
-    assert!(body_str.contains("data: "));
-    assert!(body_str.contains("chat.completion.chunk") || body_str.contains("[DONE]"));
+    assert!(
+        body_str.contains("data: "),
+        "Streaming response should contain SSE data lines"
+    );
+    assert!(
+        body_str.contains("chat.completion.chunk") || body_str.contains("[DONE]"),
+        "Streaming response should contain chunk data or [DONE]"
+    );
 }
 
 #[tokio::test]
-#[ignore] // Requires real Anthropic bridge
+#[ignore] // Requires real Anthropic bridge - run with FORCE_E2E_TESTS=1
 async fn test_anthropic_e2e_non_streaming() {
     if !has_anthropic_credentials() {
         eprintln!("⏭️  Skipping Anthropic E2E test: Anthropic bridge not configured");
@@ -111,7 +135,7 @@ async fn test_anthropic_e2e_non_streaming() {
     let server = TestServer::new();
 
     let request_body = create_chat_request(
-        "claude-3-5-sonnet",
+        CLAUDE_MODEL,
         &create_simple_message("user", "Say hello"),
         false,
     );
@@ -122,22 +146,33 @@ async fn test_anthropic_e2e_non_streaming() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let body = response.into_body();
-    let body_bytes = to_bytes(body, usize::MAX).await.unwrap();
-    let json: Value = serde_json::from_slice(&body_bytes).unwrap();
+    let body_bytes = to_bytes(body, TEST_BODY_LIMIT)
+        .await
+        .expect("Failed to read Anthropic response body");
+    let json: Value =
+        serde_json::from_slice(&body_bytes).expect("Anthropic response is not valid JSON");
 
     assert_eq!(json["object"], "chat.completion");
-    assert!(json.get("id").is_some());
-    assert_eq!(json["model"], "claude-3-5-sonnet");
-    assert!(json.get("choices").is_some());
+    assert!(json.get("id").is_some(), "Response missing 'id' field");
+    assert_eq!(json["model"], CLAUDE_MODEL);
+    assert!(
+        json.get("choices").is_some(),
+        "Response missing 'choices' field"
+    );
 
-    let choices = json["choices"].as_array().unwrap();
-    assert!(!choices.is_empty());
+    let choices = json["choices"]
+        .as_array()
+        .expect("choices field is not an array");
+    assert!(!choices.is_empty(), "choices array should not be empty");
     assert_eq!(choices[0]["message"]["role"], "assistant");
-    assert!(choices[0]["message"].get("content").is_some());
+    assert!(
+        choices[0]["message"].get("content").is_some(),
+        "Message missing 'content' field"
+    );
 }
 
 #[tokio::test]
-#[ignore] // Requires real Anthropic bridge
+#[ignore] // Requires real Anthropic bridge - run with FORCE_E2E_TESTS=1
 async fn test_anthropic_e2e_streaming() {
     if !has_anthropic_credentials() {
         eprintln!("⏭️  Skipping Anthropic E2E streaming test: Anthropic bridge not configured");
@@ -147,7 +182,7 @@ async fn test_anthropic_e2e_streaming() {
     let server = TestServer::new();
 
     let request_body = create_chat_request(
-        "claude-3-5-sonnet",
+        CLAUDE_MODEL,
         &create_simple_message("user", "Count to 3"),
         true,
     );
@@ -156,26 +191,33 @@ async fn test_anthropic_e2e_streaming() {
     let response = server.call(req).await;
 
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response
-            .headers()
-            .get("content-type")
-            .unwrap()
-            .to_str()
-            .unwrap(),
-        "text/event-stream"
-    );
+
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .expect("Streaming response should have content-type header")
+        .to_str()
+        .expect("Content-type header should be valid UTF-8");
+    assert_eq!(content_type, "text/event-stream");
 
     let body = response.into_body();
-    let body_bytes = to_bytes(body, usize::MAX).await.unwrap();
+    let body_bytes = to_bytes(body, TEST_BODY_LIMIT)
+        .await
+        .expect("Failed to read Anthropic streaming response body");
     let body_str = String::from_utf8_lossy(&body_bytes);
 
-    assert!(body_str.contains("data: "));
-    assert!(body_str.contains("chat.completion.chunk") || body_str.contains("[DONE]"));
+    assert!(
+        body_str.contains("data: "),
+        "Streaming response should contain SSE data lines"
+    );
+    assert!(
+        body_str.contains("chat.completion.chunk") || body_str.contains("[DONE]"),
+        "Streaming response should contain chunk data or [DONE]"
+    );
 }
 
 #[tokio::test]
-#[ignore] // Requires real credentials
+#[ignore] // Requires real credentials - run with FORCE_E2E_TESTS=1
 async fn test_e2e_latency_benchmark() {
     if !should_run_e2e() {
         eprintln!("⏭️  Skipping latency benchmark: {}", credential_status());
@@ -185,7 +227,7 @@ async fn test_e2e_latency_benchmark() {
     let server = TestServer::new();
 
     let request_body = create_chat_request(
-        "gemini-2.5-flash",
+        GEMINI_MODEL,
         &create_simple_message("user", "Say hello"),
         false,
     );
@@ -197,13 +239,14 @@ async fn test_e2e_latency_benchmark() {
 
     assert_eq!(response.status(), StatusCode::OK);
 
-    // Log latency for monitoring
-    eprintln!("⏱️  E2E latency: {}ms", duration.as_millis());
+    // Log latency for monitoring (use as_millis() for better precision)
+    let latency_ms = duration.as_millis();
+    eprintln!("⏱️  E2E latency: {}ms", latency_ms);
 
     // Assert reasonable latency (should be < 10s for simple request)
     assert!(
-        duration.as_secs() < 10,
-        "Request took too long: {:?}",
-        duration
+        latency_ms < 10_000,
+        "Request took too long: {}ms (expected < 10000ms)",
+        latency_ms
     );
 }

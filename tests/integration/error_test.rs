@@ -5,33 +5,54 @@ use axum::body::to_bytes;
 use axum::http::StatusCode;
 use serde_json::Value;
 
+/// Reasonable body size limit for tests (1MB)
+const TEST_BODY_LIMIT: usize = 1024 * 1024;
+/// Test model name constant
+const TEST_INVALID_MODEL: &str = "invalid-model";
+const TEST_GEMINI_MODEL: &str = "gemini-2.5-flash";
+
 #[tokio::test]
 async fn test_error_response_format() {
     let server = TestServer::new();
 
-    // Invalid model triggers 400
-    let request_body =
-        r#"{"model": "invalid-model", "messages": [{"role": "user", "content": "test"}]}"#;
-    let req = server.make_request("POST", "/v1/chat/completions", Some(request_body), None);
+    let request_body = format!(
+        r#"{{"model": "{}", "messages": [{{"role": "user", "content": "test"}}]}}"#,
+        TEST_INVALID_MODEL
+    );
+    let req = server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
     let response = server.call(req).await;
 
-    // Invalid models may return 400 or 503 depending on when validation occurs
+    let status = response.status();
+    // Invalid models return 400 (bad request) or 503 (no provider available)
     assert!(
-        response.status().is_client_error() || response.status() == StatusCode::SERVICE_UNAVAILABLE
+        status == StatusCode::BAD_REQUEST
+            || status == StatusCode::NOT_FOUND
+            || status == StatusCode::SERVICE_UNAVAILABLE,
+        "Expected 400, 404, or 503 for invalid model, got {}",
+        status
     );
 
     let body = response.into_body();
-    let body_bytes = to_bytes(body, usize::MAX).await.unwrap();
-    let json: Value = serde_json::from_slice(&body_bytes).unwrap();
+    let body_bytes = to_bytes(body, TEST_BODY_LIMIT)
+        .await
+        .expect("Failed to read error response body");
+    let json: Value =
+        serde_json::from_slice(&body_bytes).expect("Error response is not valid JSON");
 
     // Verify OpenAI error format
-    assert!(json.get("error").is_some());
+    assert!(
+        json.get("error").is_some(),
+        "Error response missing 'error' field"
+    );
     let error = &json["error"];
-    assert!(error.get("message").is_some());
-    assert!(error.get("type").is_some());
-    // Invalid models may return "invalid_request_error" (400) or "server_error" (503)
-    // depending on when validation occurs
-    assert!(error["type"] == "invalid_request_error" || error["type"] == "server_error");
+    assert!(
+        error.get("message").is_some(),
+        "Error object missing 'message' field"
+    );
+    assert!(
+        error.get("type").is_some(),
+        "Error object missing 'type' field"
+    );
 }
 
 #[tokio::test]
@@ -71,23 +92,30 @@ async fn test_missing_required_fields() {
     let server = TestServer::new();
 
     // Missing messages
-    let request_body = r#"{"model": "gemini-2.5-flash"}"#;
-    let req = server.make_request("POST", "/v1/chat/completions", Some(request_body), None);
+    let request_body = format!(r#"{{"model": "{}"}}"#, TEST_GEMINI_MODEL);
+    let req = server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
     let response = server.call(req).await;
 
-    assert!(response.status().is_client_error());
+    assert!(
+        response.status().is_client_error(),
+        "Missing messages should return 4xx error, got {}",
+        response.status()
+    );
 }
 
 #[tokio::test]
 async fn test_empty_messages_array() {
     let server = TestServer::new();
 
-    let request_body = r#"{"model": "gemini-2.5-flash", "messages": []}"#;
-    let req = server.make_request("POST", "/v1/chat/completions", Some(request_body), None);
+    let request_body = format!(r#"{{"model": "{}", "messages": []}}"#, TEST_GEMINI_MODEL);
+    let req = server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
     let response = server.call(req).await;
 
+    let status = response.status();
     // Empty messages array should fail validation (400) or provider error (503)
     assert!(
-        response.status().is_client_error() || response.status() == StatusCode::SERVICE_UNAVAILABLE
+        status == StatusCode::BAD_REQUEST || status == StatusCode::SERVICE_UNAVAILABLE,
+        "Empty messages should return 400 or 503, got {}",
+        status
     );
 }

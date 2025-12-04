@@ -13,7 +13,14 @@ mod tests {
         let iterations = 100;
 
         // Baseline memory (rough estimate)
-        let baseline = get_memory_usage();
+        // Skip test on non-Linux platforms
+        let baseline = match get_memory_usage() {
+            Some(b) => b,
+            None => {
+                eprintln!("⚠️  Memory test skipped: /proc/self/status only available on Linux");
+                return;
+            }
+        };
 
         for i in 0..iterations {
             let request_body = create_chat_request(
@@ -28,12 +35,19 @@ mod tests {
 
             // Check memory every 10 requests
             if i % 10 == 0 {
-                let current = get_memory_usage();
-                eprintln!("Memory at iteration {}: {} KB", i, current);
+                if let Some(current) = get_memory_usage() {
+                    eprintln!("Memory at iteration {}: {} KB", i, current);
+                }
             }
         }
 
-        let final_memory = get_memory_usage();
+        let final_memory = match get_memory_usage() {
+            Some(m) => m,
+            None => {
+                eprintln!("⚠️  Could not read final memory usage");
+                return;
+            }
+        };
         let memory_delta = final_memory.saturating_sub(baseline);
 
         eprintln!("Memory profiling results:");
@@ -55,7 +69,14 @@ mod tests {
         let server = TestServer::new();
         let iterations = 50;
 
-        let baseline = get_memory_usage();
+        // Skip test on non-Linux platforms
+        let baseline = match get_memory_usage() {
+            Some(b) => b,
+            None => {
+                eprintln!("⚠️  Memory test skipped: /proc/self/status only available on Linux");
+                return;
+            }
+        };
 
         for i in 0..iterations {
             let request_body = create_chat_request(
@@ -69,12 +90,19 @@ mod tests {
             let _response = server.call(req).await;
 
             if i % 10 == 0 {
-                let current = get_memory_usage();
-                eprintln!("Memory at streaming iteration {}: {} KB", i, current);
+                if let Some(current) = get_memory_usage() {
+                    eprintln!("Memory at streaming iteration {}: {} KB", i, current);
+                }
             }
         }
 
-        let final_memory = get_memory_usage();
+        let final_memory = match get_memory_usage() {
+            Some(m) => m,
+            None => {
+                eprintln!("⚠️  Could not read final memory usage");
+                return;
+            }
+        };
         let memory_delta = final_memory.saturating_sub(baseline);
 
         eprintln!("Streaming memory profiling results:");
@@ -89,20 +117,29 @@ mod tests {
         );
     }
 
-    fn get_memory_usage() -> u64 {
-        // Rough estimate using process info
-        // In production, use proper profiling tools like valgrind or heaptrack
-        if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
-            for line in status.lines() {
-                if line.starts_with("VmRSS:") {
-                    if let Some(kb_str) = line.split_whitespace().nth(1) {
-                        if let Ok(kb) = kb_str.parse::<u64>() {
-                            return kb;
+    fn get_memory_usage() -> Option<u64> {
+        // Platform-specific: Only works on Linux
+        // Returns None on other platforms to distinguish "no data" from "error"
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+                for line in status.lines() {
+                    if line.starts_with("VmRSS:") {
+                        if let Some(kb_str) = line.split_whitespace().nth(1) {
+                            if let Ok(kb) = kb_str.parse::<u64>() {
+                                return Some(kb);
+                            }
                         }
                     }
                 }
             }
+            None
         }
-        0
+        #[cfg(not(target_os = "linux"))]
+        {
+            // On non-Linux platforms, memory test is not supported
+            // Consider using sysinfo crate for cross-platform support
+            None
+        }
     }
 }

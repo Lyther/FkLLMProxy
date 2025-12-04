@@ -9,7 +9,10 @@ mod tests {
     use tokio::sync::Semaphore;
     use tokio::time::timeout;
 
+    const TEST_TIMEOUT_SECS: u64 = 30;
+
     #[tokio::test]
+    #[ignore] // Performance test - run with: cargo test --test load_test --release -- --ignored
     async fn test_concurrent_requests() {
         let concurrency = 10;
         let requests_per_worker = 5;
@@ -20,7 +23,11 @@ mod tests {
         let start = Instant::now();
 
         for _ in 0..(concurrency * requests_per_worker) {
-            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let permit = semaphore
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("Semaphore should not be closed during test");
 
             let handle = tokio::spawn(async move {
                 let server = TestServer::new();
@@ -45,7 +52,7 @@ mod tests {
         let mut error_count = 0;
 
         for handle in handles {
-            match timeout(Duration::from_secs(30), handle).await {
+            match timeout(Duration::from_secs(TEST_TIMEOUT_SECS), handle).await {
                 Ok(Ok(status)) => {
                     if status.is_success() {
                         success_count += 1;
@@ -69,11 +76,24 @@ mod tests {
             (concurrency * requests_per_worker) as f64 / duration.as_secs_f64()
         );
 
+        // Verify all requests completed
+        assert_eq!(
+            success_count + error_count,
+            concurrency * requests_per_worker,
+            "All requests should complete"
+        );
         // At least 50% should succeed (accounting for missing credentials)
-        assert!(success_count + error_count == concurrency * requests_per_worker);
+        let min_success = (concurrency * requests_per_worker) / 2;
+        assert!(
+            success_count >= min_success,
+            "At least 50% should succeed, got {}/{}",
+            success_count,
+            concurrency * requests_per_worker
+        );
     }
 
     #[tokio::test]
+    #[ignore] // Performance test - run with: cargo test --test load_test --release -- --ignored
     async fn test_sustained_load() {
         let server = TestServer::new();
         let duration_secs = 10;
@@ -82,7 +102,9 @@ mod tests {
         let start = Instant::now();
         let mut request_count = 0;
         let mut success_count = 0;
-        let interval = Duration::from_millis(1000 / target_rps as u64);
+        // Fix integer division bug: use Duration::from_secs_f64 to prevent division by zero
+        // If target_rps > 1000, this would cause infinite loop with sleep(0)
+        let interval = Duration::from_secs_f64((1.0 / target_rps as f64).max(0.001));
 
         while start.elapsed() < Duration::from_secs(duration_secs) {
             let request_body = create_chat_request(

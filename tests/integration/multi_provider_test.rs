@@ -7,6 +7,9 @@ use axum::http::StatusCode;
 use serde_json::Value;
 use vertex_bridge::services::providers::ProviderRegistry;
 
+/// Reasonable body size limit for tests (1MB)
+const TEST_BODY_LIMIT: usize = 1024 * 1024;
+
 #[tokio::test]
 async fn test_provider_routing_gemini_to_vertex() {
     let server = TestServer::new();
@@ -115,8 +118,11 @@ async fn test_provider_routing_streaming_vs_non_streaming() {
 
     if response.status() == StatusCode::OK {
         let body = response.into_body();
-        let body_bytes = to_bytes(body, usize::MAX).await.unwrap();
-        let json: Value = serde_json::from_slice(&body_bytes).unwrap();
+        let body_bytes = to_bytes(body, TEST_BODY_LIMIT)
+            .await
+            .expect("Failed to read non-streaming response body");
+        let json: Value =
+            serde_json::from_slice(&body_bytes).expect("Non-streaming response is not valid JSON");
         assert_eq!(json["object"], "chat.completion");
     }
 
@@ -131,15 +137,13 @@ async fn test_provider_routing_streaming_vs_non_streaming() {
     let response = server.call(req).await;
 
     if response.status() == StatusCode::OK {
-        assert_eq!(
-            response
-                .headers()
-                .get("content-type")
-                .unwrap()
-                .to_str()
-                .unwrap(),
-            "text/event-stream"
-        );
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .expect("Streaming response should have content-type header")
+            .to_str()
+            .expect("Content-type header should be valid string");
+        assert_eq!(content_type, "text/event-stream");
     }
 }
 

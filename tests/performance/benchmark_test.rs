@@ -32,8 +32,7 @@ mod tests {
         }
 
         if latencies.is_empty() {
-            eprintln!("⚠️  No successful requests for latency benchmark");
-            return;
+            panic!("No successful requests for latency benchmark - test cannot provide meaningful results");
         }
 
         latencies.sort();
@@ -41,7 +40,8 @@ mod tests {
         let p50 = percentile(&latencies, 50.0);
         let p95 = percentile(&latencies, 95.0);
         let p99 = percentile(&latencies, 99.0);
-        let avg = latencies.iter().sum::<u64>() / latencies.len() as u64;
+        // Fix integer division precision loss: use f64 arithmetic
+        let avg = latencies.iter().sum::<u64>() as f64 / latencies.len() as f64;
         let min = latencies[0];
         let max = latencies[latencies.len() - 1];
 
@@ -51,7 +51,7 @@ mod tests {
         eprintln!("  P95: {}ms", p95);
         eprintln!("  P99: {}ms", p99);
         eprintln!("  Max: {}ms", max);
-        eprintln!("  Avg: {}ms", avg);
+        eprintln!("  Avg: {:.2}ms", avg);
 
         // Assert reasonable latencies (adjust thresholds as needed)
         assert!(p95 < 10000, "P95 latency too high: {}ms", p95);
@@ -78,11 +78,23 @@ mod tests {
             let response = server.call(req).await;
 
             if response.status().is_success() {
-                // Measure time to first chunk
+                // Fix fake first chunk latency: Actually read the stream to measure first chunk
+                use axum::body::to_bytes;
+                let body = response.into_body();
                 let first_chunk_start = Instant::now();
-                // In a real test, we'd read the stream, but for simplicity we just measure response time
+
+                // Read first chunk from SSE stream
+                let body_bytes = to_bytes(body, 1024 * 1024).await.expect("Should read body");
                 let first_chunk_time = first_chunk_start.elapsed();
-                first_chunk_latencies.push(first_chunk_time.as_millis() as u64);
+
+                // Parse first data line from SSE
+                let body_str = String::from_utf8_lossy(&body_bytes);
+                let lines: Vec<&str> = body_str.lines().collect();
+                let has_data = lines.iter().any(|l| l.starts_with("data: "));
+
+                if has_data {
+                    first_chunk_latencies.push(first_chunk_time.as_millis() as u64);
+                }
 
                 let total_time = start.elapsed();
                 total_latencies.push(total_time.as_millis() as u64);
@@ -90,8 +102,7 @@ mod tests {
         }
 
         if first_chunk_latencies.is_empty() {
-            eprintln!("⚠️  No successful streaming requests for latency benchmark");
-            return;
+            panic!("No successful streaming requests with data chunks for latency benchmark - test cannot provide meaningful results");
         }
 
         first_chunk_latencies.sort();

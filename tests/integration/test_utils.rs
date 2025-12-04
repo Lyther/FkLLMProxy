@@ -224,24 +224,90 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_is_ci_detects_ci_environment() {
-        // Test that is_ci() can be called without panicking
-        // Actual CI detection depends on environment variables
-        let _result = is_ci();
-        // Function should return bool without error
-        assert!(matches!(_result, true | false));
+    fn test_is_ci_detects_ci_var() {
+        temp_env::with_vars(
+            [
+                ("CI", Some("true")),
+                ("GITHUB_ACTIONS", None),
+                ("GITLAB_CI", None),
+                ("JENKINS_URL", None),
+                ("TRAVIS", None),
+            ],
+            || {
+                assert!(is_ci(), "Should detect CI=true");
+            },
+        );
     }
 
     #[test]
-    fn test_is_ci_used_in_should_run_e2e() {
-        // Verify is_ci() is actually used by should_run_e2e()
-        let _result = should_run_e2e();
-        assert!(matches!(_result, true | false));
+    fn test_is_ci_detects_github_actions() {
+        temp_env::with_vars(
+            [
+                ("CI", None),
+                ("GITHUB_ACTIONS", Some("true")),
+                ("GITLAB_CI", None),
+                ("JENKINS_URL", None),
+                ("TRAVIS", None),
+            ],
+            || {
+                assert!(is_ci(), "Should detect GITHUB_ACTIONS=true");
+            },
+        );
     }
 
     #[test]
-    fn test_is_ci_used_in_credential_status() {
-        // Verify is_ci() is actually used by credential_status()
+    fn test_is_ci_returns_false_when_no_ci_vars() {
+        temp_env::with_vars(
+            [
+                ("CI", None::<&str>),
+                ("GITHUB_ACTIONS", None),
+                ("GITLAB_CI", None),
+                ("JENKINS_URL", None),
+                ("TRAVIS", None),
+            ],
+            || {
+                assert!(!is_ci(), "Should return false when no CI vars set");
+            },
+        );
+    }
+
+    #[test]
+    fn test_should_run_e2e_with_force_flag() {
+        temp_env::with_vars(
+            [
+                ("CI", Some("true")),
+                ("FORCE_E2E_TESTS", Some("1")),
+                ("VERTEX_API_KEY", None),
+                ("GOOGLE_APPLICATION_CREDENTIALS", None),
+            ],
+            || {
+                assert!(
+                    should_run_e2e(),
+                    "Should run E2E when CI=true and FORCE_E2E_TESTS=1"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn test_should_run_e2e_with_credentials() {
+        temp_env::with_vars(
+            [
+                ("CI", None::<&str>),
+                ("FORCE_E2E_TESTS", None),
+                ("VERTEX_API_KEY", Some("test-key")),
+            ],
+            || {
+                assert!(
+                    should_run_e2e(),
+                    "Should run E2E when credentials are available"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn test_credential_status_returns_non_empty() {
         let status = credential_status();
         assert!(!status.is_empty());
     }
