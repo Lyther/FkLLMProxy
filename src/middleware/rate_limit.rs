@@ -39,21 +39,35 @@ fn extract_rate_limit_key(request: &Request) -> String {
         return format!("auth:{}", hash_hex);
     }
 
-    let forwarded_ips = request
+    // Fix incomplete IP parsing: Handle RFC 7239 format properly
+    // RFC 7239 allows quoted strings and has format: "client, proxy1, proxy2"
+    // We need to handle quotes and extract the first valid IP
+    if let Some(forwarded_header) = request
         .headers()
         .get("x-forwarded-for")
         .and_then(|h| h.to_str().ok())
-        .map(|s| s.split(',').map(|ip| ip.trim()).collect::<Vec<_>>());
+    {
+        // Split by comma and process each element
+        let ip_candidates: Vec<&str> = forwarded_header.split(',').collect();
 
-    if let Some(ref ips) = forwarded_ips {
-        for ip in ips {
-            if is_valid_ip(ip) {
-                return ip.to_string();
+        for candidate in ip_candidates {
+            // Trim whitespace and remove quotes if present
+            let ip_str = candidate.trim().trim_matches('"').trim();
+
+            // Skip empty strings
+            if ip_str.is_empty() {
+                continue;
+            }
+
+            // Validate IP address
+            if is_valid_ip(ip_str) {
+                return ip_str.to_string();
             }
         }
+
         warn!(
-            "x-forwarded-for header contains no valid IP addresses: {:?}",
-            ips
+            "x-forwarded-for header contains no valid IP addresses: {}",
+            forwarded_header
         );
     }
 
@@ -82,6 +96,7 @@ pub struct RateLimiter {
 struct TokenBucket {
     tokens: u32,
     last_refill: Instant,
+    last_access: Instant, // Track last access for LRU eviction
 }
 
 #[derive(Debug, Clone)]
@@ -126,12 +141,25 @@ impl RateLimiter {
 
             if buckets.len() > MAX_BUCKETS {
                 let to_remove = buckets.len() - MAX_BUCKETS;
-                let keys: Vec<String> = buckets.keys().take(to_remove).cloned().collect();
-                for key in keys {
+                // Fix non-deterministic cleanup: Use LRU eviction instead of arbitrary removal
+                // Sort buckets by last_access time and remove oldest ones
+                let mut bucket_entries: Vec<(String, Instant)> = buckets
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.last_access))
+                    .collect();
+                bucket_entries.sort_by_key(|(_, access_time)| *access_time);
+
+                let keys_to_remove: Vec<String> = bucket_entries
+                    .iter()
+                    .take(to_remove)
+                    .map(|(k, _)| k.clone())
+                    .collect();
+
+                for key in keys_to_remove {
                     buckets.remove(&key);
                 }
                 warn!(
-                    "Rate limiter: removed {} buckets to enforce size limit",
+                    "Rate limiter: removed {} oldest buckets (LRU) to enforce size limit",
                     to_remove
                 );
             }
@@ -147,14 +175,18 @@ impl RateLimiter {
         self.cleanup_if_needed().await;
 
         let mut buckets = self.buckets.write().await;
+        let now = Instant::now();
         let bucket = buckets
             .entry(key.to_string())
             .or_insert_with(|| TokenBucket {
                 tokens: self.capacity,
-                last_refill: Instant::now(),
+                last_refill: now,
+                last_access: now,
             });
 
-        let now = Instant::now();
+        // Update last access for LRU eviction
+        bucket.last_access = now;
+
         let elapsed = now.duration_since(bucket.last_refill);
         let tokens_to_add = Self::calculate_tokens_to_add(elapsed, self.refill_rate);
 
@@ -174,13 +206,16 @@ impl RateLimiter {
     pub async fn get_info(&self, key: &str) -> RateLimitInfo {
         // Fix race condition: check() modifies bucket, so we need to read current state
         // after potential refill. We'll calculate based on current bucket state.
+        let now = Instant::now();
         let buckets = self.buckets.read().await;
-        let bucket = buckets.get(key).cloned().unwrap_or_else(|| TokenBucket {
+        let bucket = buckets.get(key).cloned().unwrap_or(TokenBucket {
             tokens: self.capacity,
-            last_refill: Instant::now(),
+            last_refill: now,
+            last_access: now,
         });
 
-        let now = Instant::now();
+        // Note: We don't update last_access here since get_info is read-only
+        // Only check() updates last_access for LRU tracking
         let elapsed = now.duration_since(bucket.last_refill);
         let tokens_to_add = Self::calculate_tokens_to_add(elapsed, self.refill_rate);
         let current_tokens = (bucket.tokens + tokens_to_add).min(self.capacity);
