@@ -73,22 +73,20 @@ sequenceDiagram
 | `deepseek-*` | DeepSeek API | HTTP/REST |
 | `ollama-*` | Ollama | HTTP/REST |
 
-**Routing Logic**:
+**Routing Logic** (via `ProviderRegistry::route_by_model()`):
 
 ```rust
-pub fn route_provider(model: &str) -> Provider {
-    if model.starts_with("gemini-") {
-        Provider::Vertex
-    } else if model.starts_with("claude-") {
-        Provider::AnthropicCLI
-    } else if model.starts_with("deepseek-") {
-        Provider::DeepSeek  // Planned - not yet implemented
-    } else if model.starts_with("ollama-") {
-        Provider::Ollama  // Planned - not yet implemented
-    } else {
-        Provider::Vertex  // Default fallback
-    }
+// Provider routing uses ProviderRegistry which checks model prefixes:
+let registry = ProviderRegistry::with_config(Some(bridge_url));
+match registry.route_by_model(model) {
+    Some(provider) => provider.execute(request, state).await,
+    None => Err(ProviderError::InvalidRequest("Model not supported".into())),
 }
+
+// Supported prefixes:
+// - "gemini-*" → Vertex AI
+// - "claude-*" → Anthropic CLI (via bridge)
+// - "deepseek-*" / "ollama-*" → Not yet implemented (enum defined, provider pending)
 ```
 
 ### 2.3 Anthropic CLI Bridge Pattern (Stdio-to-HTTP)

@@ -34,12 +34,12 @@ You have **two** ways to authenticate:
 Set the environment variable:
 
 ```bash
-export GOOGLE_API_KEY="AIzaSy..."
-````
+export GOOGLE_API_KEY="YOUR_API_KEY"
+```
 
 ```env
 # Required
-GOOGLE_API_KEY=AIzaSy...
+GOOGLE_API_KEY=YOUR_API_KEY
 
 # Optional: Auth for the proxy itself
 APP_AUTH__REQUIRE_AUTH=true
@@ -81,25 +81,29 @@ cargo run
 
 Server starts at `http://127.0.0.1:4000` (default). Use `APP_SERVER__HOST=0.0.0.0` to bind to all interfaces.
 
+> ⚠️ **Security Warning**: If binding to `0.0.0.0`, always enable authentication (`APP_AUTH__REQUIRE_AUTH=true`) and use a strong master key.
+
 ### 4. Connect Cursor
 
 1. Go to **Cursor Settings → Models**.
 2. Add a custom model, e.g. `gemini-flash-latest` (or `gemini-pro-latest`).
 3. Set **OpenAI Base URL** to: `http://localhost:4000/v1`.
-4. Set **API Key** (the *client*-side key) to something like
-   `sk-vertex-bridge-dev` (or whatever you configure in `.env` / config).
+4. Set **API Key** (the *client*-side key) to the value you set for `APP_AUTH__MASTER_KEY` in your `.env` file.
 
-> This “API Key” is **just for your local bridge** and unrelated to the Google API key.
+> This "API Key" is **just for your local bridge** and unrelated to the Google API key.
 > The bridge itself uses `GOOGLE_API_KEY` or the service account credentials to talk to Google.
+>
+> ⚠️ **Security**: Generate a strong key with `openssl rand -hex 32` and never commit it to version control.
 
 ## 🧪 Testing
 
 ### Quick Test
 
 ```bash
+# Replace YOUR_MASTER_KEY with your actual APP_AUTH__MASTER_KEY value
 curl -X POST http://localhost:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sk-vertex-bridge-dev" \
+  -H "Authorization: Bearer YOUR_MASTER_KEY" \
   -d '{
     "model": "gemini-2.5-flash",
     "messages": [{"role": "user", "content": "Hello!"}]
@@ -206,23 +210,22 @@ curl -X POST http://localhost:4000/v1/chat/completions \
 Model routing logic:
 
 - **OpenAI models** (`gpt-*`): Handled first in `src/handlers/chat.rs` via `is_openai_model()` check
-- **Other models**: Routed by prefix in `src/services/providers/mod.rs`:
+- **Other models**: Routed by prefix via `ProviderRegistry::route_by_model()` in `src/services/providers/mod.rs`:
 
 ```rust
-pub fn route_provider(model: &str) -> Provider {
-    if model.starts_with("gemini-") {
-        Provider::Vertex
-    } else if model.starts_with("claude-") {
-        Provider::AnthropicCLI
-    } else if model.starts_with("deepseek-") {
-        Provider::DeepSeek  // ❌ NOT IMPLEMENTED - Will return error
-    } else if model.starts_with("ollama-") {
-        Provider::Ollama  // ❌ NOT IMPLEMENTED - Will return error
-    } else {
-        Provider::Vertex  // Default fallback
-    }
+// Routing is handled via ProviderRegistry which checks model prefixes:
+// - "gemini-*" → Vertex AI
+// - "claude-*" → Anthropic (via bridge)
+// - Other → Returns None (model not supported)
+
+let registry = ProviderRegistry::with_config(Some(bridge_url));
+match registry.route_by_model("gemini-2.5-flash") {
+    Some(provider) => // Use provider
+    None => // Model not supported
 }
 ```
+
+> ⚠️ **Not Implemented**: DeepSeek and Ollama providers are defined in the enum but not yet implemented. Requests to these models will fail.
 
 ### Common Model IDs
 

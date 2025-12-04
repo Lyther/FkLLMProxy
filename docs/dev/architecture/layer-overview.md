@@ -50,16 +50,17 @@ Requests are automatically routed to the appropriate provider based on the model
 **Routing Logic** (`src/services/providers/mod.rs`):
 
 ```rust
-pub fn route_provider(model: &str) -> Provider {
-    if model.starts_with("gemini-") {
-        Provider::Vertex
-    } else if model.starts_with("claude-") {
-        Provider::AnthropicCLI
-    } else if model.starts_with("gpt-") {
-        // Handled separately in chat.rs before provider registry
-        Provider::OpenAI
-    } else {
-        Provider::Vertex  // Default fallback
+// Provider routing uses ProviderRegistry which checks model prefixes:
+impl ProviderRegistry {
+    pub fn route_by_model(&self, model: &str) -> Option<Arc<dyn LLMProvider>> {
+        // Returns Some(provider) if model prefix matches a registered provider
+        // - "gemini-*" → Vertex AI
+        // - "claude-*" → Anthropic (via bridge)
+        // - "gpt-*" → Handled separately in chat.rs before reaching registry
+        // Returns None for unknown models
+        self.providers.iter()
+            .find(|(_, provider)| provider.supports_model(model))
+            .map(|(_, provider)| provider.clone())
     }
 }
 ```

@@ -139,18 +139,21 @@ export OLLAMA_BASE_URL="http://localhost:11434"
 
 ## Provider Routing Logic
 
-The proxy automatically routes requests based on model name prefixes:
+The proxy automatically routes requests based on model name prefixes using `ProviderRegistry`:
 
 ```rust
-fn route_provider(model: &str) -> Provider {
-    match model {
-        m if m.starts_with("gemini-") => Provider::Vertex,
-        m if m.starts_with("claude-") => Provider::AnthropicCLI,
-        m if m.starts_with("deepseek-") => Provider::DeepSeek,
-        m if m.starts_with("ollama/") => Provider::Ollama,
-        _ => Provider::Vertex, // Default fallback
-    }
-}
+// Routing is handled via ProviderRegistry::route_by_model()
+// Each registered provider implements supports_model() which checks prefixes:
+
+// Currently implemented:
+// - "gemini-*" → Vertex AI (Google Cloud)
+// - "claude-*" → Anthropic CLI (via bridge service)
+
+// Planned (enum defined but not yet implemented):
+// - "deepseek-*" → DeepSeek API
+// - "ollama/*" → Ollama local models
+
+// Unknown models return None (model not supported error)
 ```
 
 ## Circuit Breaker Configuration
