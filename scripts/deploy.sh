@@ -112,10 +112,15 @@ diff_config() {
         warn "Config changes detected:"
         echo "$changes" | head -50
         echo ""
-        read -p "Continue with deployment? [y/N] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            fatal "Deployment cancelled by user"
+        # Skip confirmation in CI/non-interactive mode
+        if [ -t 0 ] && [ -z "${CI:-}" ] && [ -z "${FORCE_DEPLOY:-}" ]; then
+            read -p "Continue with deployment? [y/N] " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                fatal "Deployment cancelled by user"
+            fi
+        else
+            log "Non-interactive mode: auto-continuing"
         fi
     else
         log "No config changes detected"
@@ -236,12 +241,30 @@ verify_health() {
 rollback() {
     warn "Initiating rollback..."
 
-    kubectl rollout undo deployment/fkllmproxy -n "$NAMESPACE" || true
-    kubectl rollout undo deployment/fkllmproxy-harvester -n "$NAMESPACE" || true
-    kubectl rollout undo deployment/fkllmproxy-anthropic-bridge -n "$NAMESPACE" || true
+    local rollback_failed=0
+
+    kubectl rollout undo deployment/fkllmproxy -n "$NAMESPACE" || {
+        error "Failed to rollback fkllmproxy"
+        rollback_failed=1
+    }
+    kubectl rollout undo deployment/fkllmproxy-harvester -n "$NAMESPACE" || {
+        error "Failed to rollback fkllmproxy-harvester"
+        rollback_failed=1
+    }
+    kubectl rollout undo deployment/fkllmproxy-anthropic-bridge -n "$NAMESPACE" || {
+        error "Failed to rollback fkllmproxy-anthropic-bridge"
+        rollback_failed=1
+    }
 
     log "Waiting for rollback..."
-    kubectl rollout status deployment/fkllmproxy -n "$NAMESPACE" --timeout=120s || true
+    kubectl rollout status deployment/fkllmproxy -n "$NAMESPACE" --timeout=120s || {
+        error "Rollback status check failed for fkllmproxy"
+        rollback_failed=1
+    }
+
+    if [ $rollback_failed -eq 1 ]; then
+        error "Rollback encountered errors - manual intervention may be required"
+    fi
 }
 
 #------------------------------------------------------------------------------
@@ -288,10 +311,15 @@ main() {
         production|prod)
             ENV="production"
             warn "DEPLOYING TO PRODUCTION"
-            read -p "Are you sure? [y/N] " -n 1 -r
-            echo
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                fatal "Deployment cancelled"
+            # Skip confirmation in CI/non-interactive mode
+            if [ -t 0 ] && [ -z "${CI:-}" ] && [ -z "${FORCE_DEPLOY:-}" ]; then
+                read -p "Are you sure? [y/N] " -n 1 -r
+                echo
+                if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                    fatal "Deployment cancelled"
+                fi
+            else
+                log "Non-interactive mode: auto-continuing production deploy"
             fi
             ;;
         *)

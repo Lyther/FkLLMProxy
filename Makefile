@@ -15,9 +15,14 @@ help: ## Show this help message
 
 setup: ## Copy .env.example to .env if it doesn't exist
 	@if [ ! -f .env ]; then \
-		cp .env.example .env; \
-		echo "$(GREEN)✓ Created .env from .env.example$(NC)"; \
-		echo "$(YELLOW)⚠ Please edit .env and set your credentials$(NC)"; \
+		if [ -f .env.example ]; then \
+			cp .env.example .env; \
+			echo "$(GREEN)✓ Created .env from .env.example$(NC)"; \
+			echo "$(YELLOW)⚠ Please edit .env and set your credentials$(NC)"; \
+		else \
+			echo "$(RED)✗ .env.example not found, cannot create .env$(NC)"; \
+			exit 1; \
+		fi; \
 	else \
 		echo "$(YELLOW)⚠ .env already exists, skipping$(NC)"; \
 	fi
@@ -39,8 +44,9 @@ up: setup ## Start all services with docker-compose
 	@echo "$(GREEN)Starting services...$(NC)"
 	docker-compose up -d
 	@echo "$(GREEN)Waiting for services to be healthy...$(NC)"
-	@timeout 120 bash -c 'until docker-compose ps | grep -q "healthy"; do sleep 2; done' || true
-	@echo "$(GREEN)✓ Services are up$(NC)"
+	@timeout 120 bash -c 'until docker-compose ps --format json 2>/dev/null | grep -q "healthy" || docker-compose ps 2>/dev/null | grep -E "(healthy|Up)" | grep -v "unhealthy"; do sleep 2; done' && \
+		echo "$(GREEN)✓ Services are up$(NC)" || \
+		(echo "$(YELLOW)⚠ Timeout waiting for healthy services$(NC)"; docker-compose ps)
 	@make health
 
 down: ## Stop all services
@@ -49,13 +55,18 @@ down: ## Stop all services
 
 clean: ## Stop services and remove volumes (nuclear option)
 	@echo "$(RED)⚠ This will remove all volumes and data$(NC)"
-	@read -p "Are you sure? [y/N] " -n 1 -r; \
-	echo; \
-	if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
+	@if [ -n "$$FORCE_CLEAN" ] || [ -n "$$CI" ] || [ ! -t 0 ]; then \
 		docker-compose down -v; \
 		echo "$(GREEN)✓ Cleaned up$(NC)"; \
 	else \
-		echo "$(YELLOW)Cancelled$(NC)"; \
+		read -p "Are you sure? [y/N] " -n 1 -r; \
+		echo; \
+		if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
+			docker-compose down -v; \
+			echo "$(GREEN)✓ Cleaned up$(NC)"; \
+		else \
+			echo "$(YELLOW)Cancelled$(NC)"; \
+		fi; \
 	fi
 
 logs: ## Show logs from all services
@@ -96,7 +107,7 @@ format: ## Format all code
 	cargo fmt
 
 audit: ## Run security audit
-	cargo audit || cargo install cargo-audit && cargo audit
+	cargo audit || (cargo install cargo-audit && cargo audit)
 	@echo "Checking for secrets..."
 	@command -v gitleaks >/dev/null 2>&1 && gitleaks detect --source . --no-git --redact || echo "Install gitleaks for secret scanning"
 
@@ -114,7 +125,7 @@ ps: ## Show running containers
 # Deployment targets (Kubernetes)
 deploy: ## Deploy to Kubernetes (usage: make deploy VERSION=v1.2.3 ENV=staging)
 	@if [ -z "$(VERSION)" ]; then echo "$(RED)ERROR: VERSION required (e.g., make deploy VERSION=v1.2.3)$(NC)"; exit 1; fi
-	./scripts/deploy.sh $(VERSION) $(ENV)
+	./scripts/deploy.sh "$(VERSION)" "$(ENV)"
 
 rollback: ## Emergency rollback to previous deployment
 	./scripts/rollback.sh

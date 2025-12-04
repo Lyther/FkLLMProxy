@@ -102,16 +102,25 @@ jobs:
             - name: Verify health
               run: |
                   echo "💓 Verifying health..."
-                  sleep 10
+                  # Wait for pods to be ready (more reliable than arbitrary sleep)
+                  kubectl wait --for=condition=ready pod -l app=fkllmproxy,component=proxy -n default --timeout=60s || {
+                    echo "⚠️ Pods not ready within timeout, checking status..."
+                    kubectl get pods -n default -l app=fkllmproxy
+                    exit 1
+                  }
                   kubectl get pods -n default -l app=fkllmproxy
 
             - name: Rollback on failure
               if: failure()
               run: |
                   echo "❌ Deployment failed, rolling back..."
-                  kubectl rollout undo deployment/fkllmproxy -n default || true
-                  kubectl rollout undo deployment/fkllmproxy-harvester -n default || true
-                  kubectl rollout undo deployment/fkllmproxy-anthropic-bridge -n default || true
+                  rollback_failed=0
+                  kubectl rollout undo deployment/fkllmproxy -n default || { echo "Failed to rollback fkllmproxy"; rollback_failed=1; }
+                  kubectl rollout undo deployment/fkllmproxy-harvester -n default || { echo "Failed to rollback fkllmproxy-harvester"; rollback_failed=1; }
+                  kubectl rollout undo deployment/fkllmproxy-anthropic-bridge -n default || { echo "Failed to rollback fkllmproxy-anthropic-bridge"; rollback_failed=1; }
+                  if [ "$rollback_failed" -eq 1 ]; then
+                    echo "⚠️ Rollback encountered errors - manual intervention may be required"
+                  fi
 
     deploy-production:
         name: Deploy to Production
@@ -159,22 +168,30 @@ jobs:
             - name: Verify health
               run: |
                   echo "💓 Verifying health..."
-                  sleep 10
+                  # Wait for pods to be ready (more reliable than sleep)
+                  kubectl wait --for=condition=ready pod -l app=fkllmproxy,component=proxy -n default --timeout=60s || {
+                    echo "⚠️ Pods not ready within timeout, checking status..."
+                    kubectl get pods -n default -l app=fkllmproxy
+                    exit 1
+                  }
                   kubectl get pods -n default -l app=fkllmproxy
-                  # TODO: Add actual health endpoint check against production URL
 
             - name: Rollback on failure
               if: failure()
               run: |
                   echo "❌ Deployment failed, rolling back..."
-                  kubectl rollout undo deployment/fkllmproxy -n default || true
-                  kubectl rollout undo deployment/fkllmproxy-harvester -n default || true
-                  kubectl rollout undo deployment/fkllmproxy-anthropic-bridge -n default || true
+                  rollback_failed=0
+                  kubectl rollout undo deployment/fkllmproxy -n default || { echo "Failed to rollback fkllmproxy"; rollback_failed=1; }
+                  kubectl rollout undo deployment/fkllmproxy-harvester -n default || { echo "Failed to rollback fkllmproxy-harvester"; rollback_failed=1; }
+                  kubectl rollout undo deployment/fkllmproxy-anthropic-bridge -n default || { echo "Failed to rollback fkllmproxy-anthropic-bridge"; rollback_failed=1; }
+                  if [ "$rollback_failed" -eq 1 ]; then
+                    echo "⚠️ Rollback encountered errors - manual intervention may be required"
+                  fi
 
     notify:
         name: Notify
         runs-on: ubuntu-latest
-        needs: preflight
+        needs: [preflight, deploy-staging, deploy-production]
         if: always()
 
         steps:

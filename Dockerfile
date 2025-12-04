@@ -14,8 +14,8 @@ WORKDIR /usr/src/app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
-# Build the binary
-RUN cargo build --release
+# Build the binary with locked dependencies for reproducibility
+RUN cargo build --release --locked
 
 # Runtime image
 # Pinned by digest for security

@@ -60,7 +60,8 @@ jobs:
             - name: Install OpenAPI validation tools
               run: |
                   npm install -g @stoplight/spectral-cli
-                  npm install -g openapi-diff || true
+                  # openapi-diff is optional - warn but don't fail if unavailable
+                  npm install -g openapi-diff || echo "⚠️ openapi-diff install failed (optional tool)"
 
             - name: Validate OpenAPI specification
               run: |
@@ -69,10 +70,14 @@ jobs:
 
             - name: Install gitleaks
               run: |
-                  wget -q https://github.com/gitleaks/gitleaks/releases/download/v8.18.0/gitleaks_8.18.0_linux_x64.tar.gz
-                  tar -xzf gitleaks_8.18.0_linux_x64.tar.gz
-                  sudo mv gitleaks /usr/local/bin/
-                  rm gitleaks_8.18.0_linux_x64.tar.gz
+                  # Use GitHub CLI to get latest release for stability
+                  GITLEAKS_VERSION="8.18.4"
+                  wget -q "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -O gitleaks.tar.gz
+                  tar -xzf gitleaks.tar.gz
+                  mkdir -p "$HOME/.local/bin"
+                  mv gitleaks "$HOME/.local/bin/"
+                  echo "$HOME/.local/bin" >> $GITHUB_PATH
+                  rm gitleaks.tar.gz
 
             - name: Scan for secrets
               run: gitleaks detect --source . --verbose --no-git --redact --config .gitleaks.toml
@@ -202,10 +207,15 @@ jobs:
                   key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
             - name: Build release
-              run: cargo build --release
+              run: cargo build --release --locked
 
             - name: Check binary size
               run: |
+                  # Verify binary exists before checking size
+                  if [ ! -f target/release/vertex-bridge ]; then
+                    echo "❌ Binary not found at target/release/vertex-bridge"
+                    exit 1
+                  fi
                   BINARY_SIZE=$(stat -f%z target/release/vertex-bridge 2>/dev/null || stat -c%s target/release/vertex-bridge 2>/dev/null || echo "0")
                   MAX_SIZE=$((15 * 1024 * 1024))  # 15MB limit
                   echo "Binary size: $BINARY_SIZE bytes ($(($BINARY_SIZE / 1024 / 1024))MB)"
@@ -216,6 +226,8 @@ jobs:
                   echo "✅ Binary size within limit"
 
             - name: Upload binary
+              # Artifact upload failures are logged but don't fail the build
+              # since the build itself succeeded
               continue-on-error: true
               uses: actions/upload-artifact@v4
               with:

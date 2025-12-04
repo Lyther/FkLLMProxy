@@ -1,3 +1,8 @@
+# WARNING: This docker-compose.yml is for LOCAL DEVELOPMENT ONLY
+# Do NOT use in production without:
+#   1. Setting a strong master key (at least 32 chars, use: openssl rand -hex 32)
+#   2. Properly configuring credentials (no /dev/null fallback)
+#   3. Using secrets management (K8s secrets, Docker secrets, etc.)
 services:
   vertex-bridge:
     build:
@@ -10,7 +15,9 @@ services:
       - APP_SERVER__HOST=0.0.0.0
       - APP_SERVER__PORT=4000
       - APP_AUTH__REQUIRE_AUTH=${APP_AUTH__REQUIRE_AUTH:-true}
-      - APP_AUTH__MASTER_KEY=${APP_AUTH__MASTER_KEY:-sk-vertex-bridge-dev}
+      # SECURITY: NEVER use this default key in production!
+      # Generate a secure key with: openssl rand -hex 32
+      - APP_AUTH__MASTER_KEY=${APP_AUTH__MASTER_KEY:?Set APP_AUTH__MASTER_KEY in .env}
       - APP_VERTEX__PROJECT_ID=${APP_VERTEX__PROJECT_ID:-}
       - APP_VERTEX__REGION=${APP_VERTEX__REGION:-us-central1}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
@@ -26,7 +33,8 @@ services:
       - APP_CIRCUIT_BREAKER__SUCCESS_THRESHOLD=${APP_CIRCUIT_BREAKER__SUCCESS_THRESHOLD:-3}
     volumes:
       # Mount service account JSON for Vertex AI auth
-      - ${GOOGLE_APPLICATION_CREDENTIALS:-/dev/null}:/etc/gcp/sa.json:ro
+      # WARNING: Set GOOGLE_APPLICATION_CREDENTIALS in .env - /dev/null fallback is for API key mode only
+      - ${GOOGLE_APPLICATION_CREDENTIALS:-./service-account.json.placeholder}:/etc/gcp/sa.json:ro
     depends_on:
       harvester:
         condition: service_healthy

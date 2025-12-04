@@ -2,8 +2,7 @@
 # Security Audit Script for FkLLMProxy
 # Runs dependency scanning, checks for secrets, and validates security practices
 
-set -e
-set -o pipefail
+set -euo pipefail
 
 echo "🔒 Running Security Audit for FkLLMProxy"
 echo "========================================"
@@ -41,7 +40,7 @@ SECRET_PATTERNS=(
 
 FOUND_SECRETS=0
 for pattern in "${SECRET_PATTERNS[@]}"; do
-    if grep -r -i --exclude-dir=target --exclude-dir=node_modules --exclude="*.lock" -E "$pattern" . 2>/dev/null; then
+    if grep -r -i --exclude-dir=target --exclude-dir=node_modules --exclude-dir=.git --exclude="*.lock" -E "$pattern" . 2>/dev/null; then
         echo -e "${RED}⚠️  Potential secret found matching pattern: $pattern${NC}"
         FOUND_SECRETS=1
     fi
@@ -87,10 +86,14 @@ fi
 echo ""
 echo "5. Checking file permissions..."
 CRED_FILE="${GOOGLE_APPLICATION_CREDENTIALS:-$HOME/.config/fkllmproxy/service-account.json}"
-if [ -f "$CRED_FILE" ] && [ "$(stat -c %a "$CRED_FILE" 2>/dev/null || stat -f %A "$CRED_FILE" 2>/dev/null)" != "600" ]; then
-    echo -e "${YELLOW}⚠️  Credential file permissions should be 600: $CRED_FILE${NC}"
-elif [ -f "$CRED_FILE" ]; then
-    echo -e "${GREEN}✅ File permissions look correct: $CRED_FILE${NC}"
+if [ -f "$CRED_FILE" ]; then
+    # Quote variable to handle paths with spaces
+    file_perms="$(stat -c %a "$CRED_FILE" 2>/dev/null || stat -f %A "$CRED_FILE" 2>/dev/null)"
+    if [ "$file_perms" != "600" ]; then
+        echo -e "${YELLOW}⚠️  Credential file permissions should be 600 (got $file_perms): $CRED_FILE${NC}"
+    else
+        echo -e "${GREEN}✅ File permissions look correct: $CRED_FILE${NC}"
+    fi
 else
     echo -e "${YELLOW}⚠️  No credential file found at $CRED_FILE${NC}"
 fi
