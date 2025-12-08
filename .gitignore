@@ -39,12 +39,11 @@ server.log
 .idea/
 *.swp
 *.swo
-.cursor/
 .husky/
 .vscode/
+.cursor/
 .cursorignore
 .cursorrules
-.editorconfig
 FkLLMProxy.code-workspace
 
 # OS
