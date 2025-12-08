@@ -1,3 +1,4 @@
+use num_traits::ToPrimitive;
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -6,18 +7,27 @@ use tokio::sync::RwLock;
 const MAX_LATENCY_HISTORY: usize = 100;
 const MAX_SORTED_DURATIONS: usize = 1000;
 
-fn percentile(sorted_data: &[u64], p: f64) -> u64 {
+fn to_f64(value: u64) -> f64 {
+    value.to_f64().unwrap_or(f64::MAX)
+}
+
+fn usize_to_f64(value: usize) -> f64 {
+    value.to_f64().unwrap_or(f64::MAX)
+}
+
+fn percentile(sorted_data: &[u64], p: u8) -> u64 {
     if sorted_data.is_empty() {
         return 0;
     }
-    // Fix percentile validation: Clamp p to valid range [0.0, 100.0]
-    let p = p.clamp(0.0, 100.0);
-    let index = (sorted_data.len() as f64 * p / 100.0).ceil() as usize - 1;
-    // Fix potential panic: Use get() with bounds checking instead of direct indexing
-    sorted_data
-        .get(index.min(sorted_data.len().saturating_sub(1)))
-        .copied()
-        .unwrap_or_default()
+
+    // Use integer math to avoid float-to-int casts and truncation issues.
+    let clamped = u128::from(p.min(100));
+    let len = sorted_data.len() as u128;
+    let raw_index = (len * clamped).div_ceil(100);
+    let safe_index = raw_index.saturating_sub(1).min(len.saturating_sub(1));
+    let index = usize::try_from(safe_index).unwrap_or(sorted_data.len().saturating_sub(1));
+
+    sorted_data.get(index).copied().unwrap_or_default()
 }
 
 #[derive(Clone, Default, Serialize)]
@@ -52,6 +62,7 @@ pub struct Metrics {
 }
 
 impl Metrics {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             cache_hits: Arc::new(RwLock::new(0)),
@@ -103,12 +114,13 @@ impl Metrics {
         }
     }
 
+    #[must_use]
     pub async fn get_stats(&self) -> MetricsStats {
         let cache_hits = *self.cache_hits.read().await;
         let cache_misses = *self.cache_misses.read().await;
         let total_cache = cache_hits + cache_misses;
         let cache_hit_rate = if total_cache > 0 {
-            (cache_hits as f64 / total_cache as f64) * 100.0
+            to_f64(cache_hits) / to_f64(total_cache) * 100.0
         } else {
             0.0
         };
@@ -116,23 +128,23 @@ impl Metrics {
         let waf_blocks = *self.waf_blocks.read().await;
         let total_requests = *self.total_requests.read().await;
         let waf_block_rate = if total_requests > 0 {
-            (waf_blocks as f64 / total_requests as f64) * 100.0
+            to_f64(waf_blocks) / to_f64(total_requests) * 100.0
         } else {
             0.0
         };
 
         let arkose_solves = *self.arkose_solves.read().await;
         let arkose_times = self.arkose_solve_times_ms.read().await;
-        let avg_arkose_solve_time_ms = if !arkose_times.is_empty() {
-            // Fix potential overflow: Use checked arithmetic or f64 accumulation
-            arkose_times.iter().map(|&x| x as f64).sum::<f64>() / arkose_times.len() as f64
-        } else {
+        let avg_arkose_solve_time_ms = if arkose_times.is_empty() {
             0.0
+        } else {
+            let total: f64 = arkose_times.iter().map(|&x| to_f64(x)).sum();
+            total / usize_to_f64(arkose_times.len())
         };
 
         let failed_requests = *self.failed_requests.read().await;
         let success_rate = if total_requests > 0 {
-            ((total_requests - failed_requests) as f64 / total_requests as f64) * 100.0
+            to_f64(total_requests - failed_requests) / to_f64(total_requests) * 100.0
         } else {
             0.0
         };
@@ -143,14 +155,14 @@ impl Metrics {
         // For now, we clone and sort which is O(n log n) but acceptable for small datasets (< 1000 items)
         let mut sorted_durations: Vec<u64> = durations.iter().copied().collect();
         sorted_durations.sort_unstable(); // Use sort_unstable for better performance
-        let p50 = percentile(&sorted_durations, 50.0);
-        let p95 = percentile(&sorted_durations, 95.0);
-        let p99 = percentile(&sorted_durations, 99.0);
-        let avg_latency = if !sorted_durations.is_empty() {
-            // Fix potential overflow: Use f64 accumulation instead of u64 sum
-            sorted_durations.iter().map(|&x| x as f64).sum::<f64>() / sorted_durations.len() as f64
-        } else {
+        let p50 = percentile(&sorted_durations, 50);
+        let p95 = percentile(&sorted_durations, 95);
+        let p99 = percentile(&sorted_durations, 99);
+        let avg_latency = if sorted_durations.is_empty() {
             0.0
+        } else {
+            let total: f64 = sorted_durations.iter().map(|&x| to_f64(x)).sum();
+            total / usize_to_f64(sorted_durations.len())
         };
 
         MetricsStats {

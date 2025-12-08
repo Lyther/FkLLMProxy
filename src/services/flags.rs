@@ -39,6 +39,7 @@ impl FeatureFlags {
     /// Check if a feature is enabled
     /// Returns false if flag doesn't exist
     /// Use `is_set()` to distinguish between "disabled" and "not configured"
+    #[must_use]
     pub fn is_enabled(flag: &str) -> bool {
         Self::is_set(flag).unwrap_or(false)
     }
@@ -46,6 +47,11 @@ impl FeatureFlags {
     /// Check if a feature flag is set (configured)
     /// Returns Some(true) if enabled, Some(false) if disabled, None if not configured
     /// This distinguishes between "disabled" and "not configured" which helps catch config errors
+    ///
+    /// # Panics
+    ///
+    /// Panics if the flags lock is poisoned.
+    #[must_use]
     pub fn is_set(flag: &str) -> Option<bool> {
         let flags_map = FLAGS.get_or_init(|| RwLock::new(HashMap::new()));
         // Fix lock poisoning: Recover from poison instead of panicking

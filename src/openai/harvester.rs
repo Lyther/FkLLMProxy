@@ -16,7 +16,7 @@ const HEALTH_ENDPOINT: &str = "/health";
 fn calculate_backoff_ms(attempt: u32) -> u64 {
     // Exponential backoff: RETRY_BACKOFF_MS * 2^(attempt-1)
     // For attempt 1: 500ms, attempt 2: 1000ms, attempt 3: 2000ms
-    RETRY_BACKOFF_MS * (1 << (attempt.saturating_sub(1) as u64))
+    RETRY_BACKOFF_MS * (1 << u64::from(attempt.saturating_sub(1)))
 }
 
 #[derive(Clone)]
@@ -35,6 +35,11 @@ pub struct HarvesterClient {
 }
 
 impl HarvesterClient {
+    /// Creates a new `HarvesterClient`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP client cannot be created.
     pub fn new(config: &Arc<AppConfig>) -> Result<Self> {
         let base_url = config.openai.harvester_url.clone();
         let client = reqwest::Client::builder()
@@ -52,6 +57,7 @@ impl HarvesterClient {
         })
     }
 
+    #[must_use]
     pub fn with_metrics(mut self, metrics: Arc<crate::openai::metrics::Metrics>) -> Self {
         self.metrics = Some(metrics);
         self
@@ -83,6 +89,11 @@ impl HarvesterClient {
         format!("{}{}", self.base_url, HEALTH_ENDPOINT)
     }
 
+    /// Gets the tokens from the Harvester.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the tokens cannot be retrieved.
     pub async fn get_tokens(&self, require_arkose: bool) -> Result<TokenResponse> {
         let now = SystemTime::now();
 
@@ -127,9 +138,7 @@ impl HarvesterClient {
                 Err(e) => {
                     if attempt == RETRY_ATTEMPTS {
                         anyhow::bail!(
-                            "Failed to connect to Harvester after {} attempts: {}",
-                            RETRY_ATTEMPTS,
-                            e
+                            "Failed to connect to Harvester after {RETRY_ATTEMPTS} attempts: {e}"
                         );
                     }
                     tokio::time::sleep(Duration::from_millis(calculate_backoff_ms(attempt))).await;
@@ -147,8 +156,8 @@ impl HarvesterClient {
                             String::new()
                         }
                     };
-                    error!("Harvester error: {} - {}", status, text);
-                    anyhow::bail!("Harvester returned error: {} - {}", status, text);
+                    error!("Harvester error: {status} - {text}");
+                    anyhow::bail!("Harvester returned error: {status} - {text}");
                 }
                 tokio::time::sleep(Duration::from_millis(calculate_backoff_ms(attempt))).await;
                 continue;
@@ -158,7 +167,7 @@ impl HarvesterClient {
                 Ok(t) => t,
                 Err(e) => {
                     if attempt == RETRY_ATTEMPTS {
-                        anyhow::bail!("Failed to parse token response: {}", e);
+                        anyhow::bail!("Failed to parse token response: {e}");
                     }
                     tokio::time::sleep(Duration::from_millis(calculate_backoff_ms(attempt))).await;
                     continue;
@@ -183,11 +192,15 @@ impl HarvesterClient {
         // This bail! is logically unreachable but required by Rust's type system
         // If this is ever reached, it indicates a logic error in the retry loop
         anyhow::bail!(
-            "Failed to get tokens after {} attempts (unreachable code path)",
-            RETRY_ATTEMPTS
+            "Failed to get tokens after {RETRY_ATTEMPTS} attempts (unreachable code path)"
         );
     }
 
+    /// Refreshes the tokens from the Harvester.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the tokens cannot be refreshed.
     pub async fn refresh_tokens(&self, force_arkose: bool) -> Result<TokenResponse> {
         let url = self.build_refresh_url();
         let body = serde_json::json!({
@@ -200,9 +213,7 @@ impl HarvesterClient {
                 Err(e) => {
                     if attempt == RETRY_ATTEMPTS {
                         anyhow::bail!(
-                            "Failed to connect to Harvester after {} attempts: {}",
-                            RETRY_ATTEMPTS,
-                            e
+                            "Failed to connect to Harvester after {RETRY_ATTEMPTS} attempts: {e}"
                         );
                     }
                     tokio::time::sleep(Duration::from_millis(calculate_backoff_ms(attempt))).await;
@@ -220,8 +231,8 @@ impl HarvesterClient {
                             String::new()
                         }
                     };
-                    error!("Harvester refresh error: {} - {}", status, text);
-                    anyhow::bail!("Harvester refresh failed: {} - {}", status, text);
+                    error!("Harvester refresh error: {status} - {text}");
+                    anyhow::bail!("Harvester refresh failed: {status} - {text}");
                 }
                 tokio::time::sleep(Duration::from_millis(calculate_backoff_ms(attempt))).await;
                 continue;
@@ -231,7 +242,7 @@ impl HarvesterClient {
                 Ok(t) => t,
                 Err(e) => {
                     if attempt == RETRY_ATTEMPTS {
-                        anyhow::bail!("Failed to parse refresh response: {}", e);
+                        anyhow::bail!("Failed to parse refresh response: {e}");
                     }
                     tokio::time::sleep(Duration::from_millis(calculate_backoff_ms(attempt))).await;
                     continue;
@@ -248,11 +259,15 @@ impl HarvesterClient {
         }
 
         anyhow::bail!(
-            "Failed to refresh tokens after {} attempts (unreachable code path)",
-            RETRY_ATTEMPTS
+            "Failed to refresh tokens after {RETRY_ATTEMPTS} attempts (unreachable code path)"
         );
     }
 
+    /// Checks the health of the Harvester.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the health check fails.
     pub async fn health_check(&self) -> Result<HealthResponse> {
         let url = self.build_health_url();
 
@@ -262,9 +277,7 @@ impl HarvesterClient {
                 Err(e) => {
                     if attempt == RETRY_ATTEMPTS {
                         anyhow::bail!(
-                            "Failed to connect to Harvester after {} attempts: {}",
-                            RETRY_ATTEMPTS,
-                            e
+                            "Failed to connect to Harvester after {RETRY_ATTEMPTS} attempts: {e}"
                         );
                     }
                     tokio::time::sleep(Duration::from_millis(calculate_backoff_ms(attempt))).await;
@@ -284,7 +297,7 @@ impl HarvesterClient {
                 Ok(h) => h,
                 Err(e) => {
                     if attempt == RETRY_ATTEMPTS {
-                        anyhow::bail!("Failed to parse health response: {}", e);
+                        anyhow::bail!("Failed to parse health response: {e}");
                     }
                     tokio::time::sleep(Duration::from_millis(calculate_backoff_ms(attempt))).await;
                     continue;
@@ -295,8 +308,7 @@ impl HarvesterClient {
         }
 
         anyhow::bail!(
-            "Failed health check after {} attempts (unreachable code path)",
-            RETRY_ATTEMPTS
+            "Failed health check after {RETRY_ATTEMPTS} attempts (unreachable code path)"
         );
     }
 }

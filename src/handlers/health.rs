@@ -75,7 +75,7 @@ async fn check_anthropic_bridge_health(bridge_url: &str) -> serde_json::Value {
         }
     };
 
-    let health_url = format!("{}{}", bridge_url, BRIDGE_HEALTH_PATH);
+    let health_url = bridge_url.to_string() + BRIDGE_HEALTH_PATH;
 
     match client.get(&health_url).send().await {
         Ok(resp) if resp.status().is_success() => {
@@ -111,11 +111,11 @@ pub async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
 
     let harvester_available = harvester_status
         .get("available")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
     let bridge_available = anthropic_bridge_status
         .get("available")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
     let overall_status = if harvester_available && bridge_available {

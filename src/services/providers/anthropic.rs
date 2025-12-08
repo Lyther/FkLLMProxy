@@ -34,6 +34,7 @@ pub struct AnthropicBridgeProvider {
 }
 
 impl AnthropicBridgeProvider {
+    #[must_use]
     pub fn new(bridge_url: String) -> Self {
         Self { bridge_url }
     }
@@ -87,19 +88,19 @@ impl LLMProvider for AnthropicBridgeProvider {
                 }
                 Err(e) => {
                     return Err(ProviderError::Internal(format!(
-                        "Stream error while processing Anthropic response: {}",
-                        e
+                        "Stream error while processing Anthropic response: {e}"
                     )));
                 }
             }
         }
 
-        // Fix timestamp overflow: clamp timestamp to prevent overflow
-        let timestamp = chrono::Utc::now().timestamp();
-        let created = timestamp.max(0) as u64;
+        let created = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
 
         let response = ChatCompletionResponse {
-            id: format!("chatcmpl-{}", request_id),
+            id: format!("chatcmpl-{request_id}"),
             object: "chat.completion".to_string(),
             created,
             model,
@@ -144,8 +145,7 @@ impl LLMProvider for AnthropicBridgeProvider {
                     .await
                     .map_err(|e| {
                         ProviderError::Network(format!(
-                            "Failed to contact Anthropic bridge at {}: {}",
-                            url, e
+                            "Failed to contact Anthropic bridge at {url}: {e}"
                         ))
                     })?;
 
@@ -164,8 +164,7 @@ impl LLMProvider for AnthropicBridgeProvider {
                     }
 
                     return Err(ProviderError::Unavailable(format!(
-                        "Anthropic bridge HTTP {}: {}",
-                        status, error_text
+                        "Anthropic bridge HTTP {status}: {error_text}"
                     )));
                 }
 
@@ -212,7 +211,7 @@ mod tests {
     use crate::services::providers::ProviderRegistry;
     use std::sync::Arc;
 
-    fn create_test_state(bridge_url: String) -> AppState {
+    fn create_test_state(bridge_url: &str) -> AppState {
         let config = AppConfig {
             server: ServerConfig {
                 host: "127.0.0.1".to_string(),
@@ -241,7 +240,13 @@ mod tests {
                 arkose_token_ttl_secs: 120,
             },
             anthropic: AnthropicConfig {
-                bridge_url: bridge_url.clone(),
+                bridge_url: bridge_url.to_string(),
+            },
+            gemini_cli: crate::config::GeminiCliConfig {
+                enabled: false,
+                cli_path: None,
+                timeout_secs: 30,
+                max_concurrency: 4,
             },
             rate_limit: RateLimitConfig {
                 capacity: 100,
@@ -260,10 +265,12 @@ mod tests {
 
         AppState {
             config: Arc::new(config.clone()),
-            token_manager: TokenManager::new(None, None).unwrap(),
-            provider_registry: Arc::new(ProviderRegistry::with_config(Some(
-                config.anthropic.bridge_url.clone(),
-            ))),
+            token_manager: TokenManager::new(None, None, None)
+                .expect("TokenManager should initialize in provider tests"),
+            provider_registry: Arc::new(ProviderRegistry::with_config(
+                &Some(config.anthropic.bridge_url.clone()),
+                &None,
+            )),
             rate_limiter: crate::middleware::rate_limit::RateLimiter::new(
                 config.rate_limit.capacity,
                 config.rate_limit.refill_per_second,
@@ -288,7 +295,7 @@ mod tests {
 
     #[test]
     fn test_anthropic_provider_with_state() {
-        let state = create_test_state("http://localhost:4001".to_string());
+        let state = create_test_state("http://localhost:4001");
         let provider = AnthropicBridgeProvider::new(state.config.anthropic.bridge_url.clone());
         assert_eq!(provider.provider_type(), Provider::AnthropicCLI);
         assert!(provider.supports_model("claude-3-5-sonnet"));

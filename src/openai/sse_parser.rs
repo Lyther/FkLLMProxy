@@ -24,6 +24,7 @@ pub struct SSEParser {
 }
 
 impl SSEParser {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             buffer: String::new(),
@@ -52,7 +53,7 @@ impl SSEParser {
         let ends_with_newline = text.ends_with('\n') || text.ends_with('\r');
 
         // Split buffer into lines efficiently - collect as Vec<String> only for incomplete handling
-        let lines: Vec<String> = self.buffer.lines().map(|s| s.to_string()).collect();
+        let lines: Vec<String> = self.buffer.lines().map(str::to_string).collect();
         let (complete_lines, incomplete) = if !ends_with_newline && !lines.is_empty() {
             // Last line is incomplete - keep it in buffer
             let incomplete = lines.last().cloned();

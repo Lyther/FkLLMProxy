@@ -8,6 +8,11 @@ use crate::models::{
 use anyhow::Result;
 use tracing::warn;
 
+/// Transforms an OpenAI-style chat completion request into a Vertex request.
+///
+/// # Errors
+///
+/// Returns an error if the input request cannot be converted to the Vertex format.
 pub fn transform_request(req: ChatCompletionRequest) -> Result<GenerateContentRequest> {
     // Collect all system messages and concatenate them
     let system_messages: Vec<String> = req
@@ -17,10 +22,10 @@ pub fn transform_request(req: ChatCompletionRequest) -> Result<GenerateContentRe
         .map(|m| m.content.clone())
         .collect();
 
-    let system_instruction_text = if !system_messages.is_empty() {
-        Some(system_messages.join("\n\n"))
-    } else {
+    let system_instruction_text = if system_messages.is_empty() {
         None
+    } else {
+        Some(system_messages.join("\n\n"))
     };
 
     // Collect non-system messages, preserving role semantics
@@ -28,7 +33,7 @@ pub fn transform_request(req: ChatCompletionRequest) -> Result<GenerateContentRe
     // since Vertex doesn't have a Tool role equivalent
     let mut contents: Vec<Content> = Vec::new();
 
-    for msg in req.messages.iter() {
+    for msg in &req.messages {
         match msg.role {
             Role::System => {
                 // System messages are already collected above
@@ -71,8 +76,13 @@ pub fn transform_request(req: ChatCompletionRequest) -> Result<GenerateContentRe
     Ok(vertex_req)
 }
 
+/// Transforms a Vertex response into an OpenAI-compatible chat completion response.
+///
+/// # Errors
+///
+/// Returns an error if the Vertex response does not include required fields.
 pub fn transform_response(
-    vertex_res: GenerateContentResponse,
+    vertex_res: &GenerateContentResponse,
     model: String,
     request_id: String,
 ) -> Result<ChatCompletionResponse> {
@@ -112,12 +122,10 @@ pub fn transform_response(
         }
     });
 
-    // Fix: Use SystemTime instead of chrono for timestamp
-    let timestamp = std::time::SystemTime::now()
+    let created = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
+        .map(|d| d.as_secs())
         .unwrap_or(0);
-    let created = timestamp.max(0) as u64;
 
     Ok(ChatCompletionResponse {
         id: request_id,
@@ -137,8 +145,13 @@ pub fn transform_response(
     })
 }
 
+/// Transforms a streaming Vertex response chunk into an OpenAI-compatible streaming chunk.
+///
+/// # Errors
+///
+/// Returns an error if the Vertex response does not include required fields.
 pub fn transform_stream_chunk(
-    vertex_res: GenerateContentResponse,
+    vertex_res: &GenerateContentResponse,
     model: String,
     request_id: String,
 ) -> Result<crate::models::openai::ChatCompletionChunk> {
@@ -157,12 +170,10 @@ pub fn transform_stream_chunk(
 
     let finish_reason = candidate.finish_reason.as_ref().map(|s| s.to_lowercase());
 
-    // Fix: Use SystemTime instead of chrono for timestamp
-    let timestamp = std::time::SystemTime::now()
+    let created = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
+        .map(|d| d.as_secs())
         .unwrap_or(0);
-    let created = timestamp.max(0) as u64;
 
     Ok(crate::models::openai::ChatCompletionChunk {
         id: request_id,
@@ -209,19 +220,24 @@ mod tests {
             stop: None,
         };
 
-        let vertex_req = transform_request(req).unwrap();
+        let vertex_req =
+            transform_request(req).expect("transform_request should succeed for valid input");
         assert_eq!(vertex_req.contents.len(), 2);
         assert_eq!(vertex_req.contents[0].role, "user");
         assert_eq!(vertex_req.contents[1].role, "model");
         assert_eq!(
-            vertex_req.generation_config.as_ref().unwrap().temperature,
+            vertex_req
+                .generation_config
+                .as_ref()
+                .expect("generation_config should exist")
+                .temperature,
             Some(0.7)
         );
         assert_eq!(
             vertex_req
                 .generation_config
                 .as_ref()
-                .unwrap()
+                .expect("generation_config should exist")
                 .max_output_tokens,
             Some(100)
         );
@@ -250,7 +266,8 @@ mod tests {
             stop: None,
         };
 
-        let vertex_req = transform_request(req).unwrap();
+        let vertex_req =
+            transform_request(req).expect("transform_request should succeed with system message");
         assert!(vertex_req.system_instruction.is_some());
         assert_eq!(vertex_req.contents.len(), 1);
         assert_eq!(vertex_req.contents[0].role, "user");
@@ -277,15 +294,21 @@ mod tests {
         };
 
         let response =
-            transform_response(vertex_res, "gemini-pro".to_string(), "test-id".to_string())
-                .unwrap();
+            transform_response(&vertex_res, "gemini-pro".to_string(), "test-id".to_string())
+                .expect("transform_response should succeed with valid candidate");
         assert_eq!(response.id, "test-id");
         assert_eq!(response.model, "gemini-pro");
         assert_eq!(response.choices.len(), 1);
         assert_eq!(response.choices[0].message.content, "Hello, world!");
         assert_eq!(response.choices[0].finish_reason, Some("stop".to_string()));
         assert!(response.usage.is_some());
-        assert_eq!(response.usage.unwrap().total_tokens, 15);
+        assert_eq!(
+            response
+                .usage
+                .expect("usage should be present")
+                .total_tokens,
+            15
+        );
     }
 
     #[test]
@@ -296,7 +319,7 @@ mod tests {
         };
 
         let result =
-            transform_response(vertex_res, "gemini-pro".to_string(), "test-id".to_string());
+            transform_response(&vertex_res, "gemini-pro".to_string(), "test-id".to_string());
         assert!(result.is_err());
     }
 }

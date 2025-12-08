@@ -43,9 +43,9 @@ where
                     // Extract text field if present (for text content)
                     v.get("text")
                         .and_then(|t| t.as_str())
-                        .map(|s| s.to_string())
+                        .map(std::string::ToString::to_string)
                         // Fallback: if value is a string, use it directly
-                        .or_else(|| v.as_str().map(|s| s.to_string()))
+                        .or_else(|| v.as_str().map(std::string::ToString::to_string))
                 })
                 .collect();
             // Fix: Document that joining with "\n" may not be correct for all content types
@@ -92,6 +92,16 @@ pub struct ChatCompletionRequest {
 }
 
 impl ChatCompletionRequest {
+    /// Validates the chat completion request parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string if:
+    /// - Model field is empty
+    /// - Messages array is empty
+    /// - Temperature is outside the valid range [0, 2]
+    /// - Top-p is outside the valid range [0, 1]
+    /// - Max tokens is 0 or negative
     pub fn validate(&self) -> Result<(), String> {
         // Validate model name
         if self.model.is_empty() {
@@ -194,7 +204,8 @@ mod tests {
             "messages": [],
             "stop": "stop"
         }"#;
-        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        let req: ChatCompletionRequest =
+            serde_json::from_str(json).expect("chat completion request should deserialize");
         assert_eq!(req.stop, Some(vec!["stop".to_string()]));
     }
 
@@ -205,7 +216,8 @@ mod tests {
             "messages": [],
             "stop": ["stop1", "stop2"]
         }"#;
-        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        let req: ChatCompletionRequest =
+            serde_json::from_str(json).expect("chat completion request should deserialize");
         assert_eq!(
             req.stop,
             Some(vec!["stop1".to_string(), "stop2".to_string()])
@@ -219,7 +231,8 @@ mod tests {
             "messages": [],
             "stop": null
         }"#;
-        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        let req: ChatCompletionRequest =
+            serde_json::from_str(json).expect("chat completion request should deserialize");
         assert_eq!(req.stop, None);
     }
 
@@ -229,7 +242,7 @@ mod tests {
             "role": "user",
             "content": [{"type": "text", "text": "hello"}, {"type": "text", "text": "world"}]
         }"#;
-        let msg: ChatMessage = serde_json::from_str(json).unwrap();
+        let msg: ChatMessage = serde_json::from_str(json).expect("chat message should deserialize");
         assert_eq!(msg.content, "hello\nworld");
     }
 }

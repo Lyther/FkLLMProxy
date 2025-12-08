@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::{
     models::{
         openai::{ChatCompletionRequest, ChatCompletionResponse},
-        vertex::GenerateContentResponse,
+        vertex::{GenerateContentRequest, GenerateContentResponse},
     },
     services::{
         providers::{LLMProvider, Provider, ProviderError, ProviderResult, StreamingResponse},
@@ -31,11 +31,11 @@ impl VertexUrlBuilder {
         token: &str,
         streaming: bool,
     ) -> (String, String) {
-        let base_url = format!("{}/v1beta/models/{}", api_base, model);
+        let base_url = format!("{api_base}/v1beta/models/{model}");
         let query = if streaming {
-            format!("?key={}&alt=sse", token)
+            format!("?key={token}&alt=sse")
         } else {
-            format!("?key={}", token)
+            format!("?key={token}")
         };
         (base_url, query)
     }
@@ -47,13 +47,13 @@ impl VertexUrlBuilder {
         model: &str,
         streaming: bool,
     ) -> (String, String) {
-        let base = oauth_base
-            .map(|url| url.trim_end_matches('/').to_string())
-            .unwrap_or_else(|| format!("https://{}-aiplatform.googleapis.com", region));
+        let base = oauth_base.map_or_else(
+            || format!("https://{region}-aiplatform.googleapis.com"),
+            |url| url.trim_end_matches('/').to_string(),
+        );
 
         let base_url = format!(
-            "{}/v1/projects/{}/locations/{}/publishers/google/models/{}",
-            base, project_id, region, model
+            "{base}/v1/projects/{project_id}/locations/{region}/publishers/google/models/{model}"
         );
 
         let query = if streaming { "?alt=sse" } else { "" };
@@ -70,17 +70,16 @@ impl VertexUrlBuilder {
         let is_api_key = token_manager.is_api_key();
 
         if is_api_key {
-            let api_base = config
-                .api_key_base_url
-                .as_ref()
-                .map(|url| url.trim_end_matches('/').to_string())
-                .unwrap_or_else(|| API_KEY_BASE_URL.to_string());
+            let api_base = config.api_key_base_url.as_ref().map_or_else(
+                || API_KEY_BASE_URL.to_string(),
+                |url| url.trim_end_matches('/').to_string(),
+            );
             Self::build_api_key_url(&api_base, model, token, streaming)
         } else {
-            let project_id = token_manager
-                .get_project_id()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| UNKNOWN_PROJECT_ID.to_string());
+            let project_id = token_manager.get_project_id().map_or_else(
+                || UNKNOWN_PROJECT_ID.to_string(),
+                std::string::ToString::to_string,
+            );
             Self::build_oauth_url(
                 config.oauth_base_url.as_ref(),
                 &project_id,
@@ -95,8 +94,88 @@ impl VertexUrlBuilder {
 pub struct VertexProvider;
 
 impl VertexProvider {
+    #[must_use]
     pub fn new() -> Self {
         Self
+    }
+
+    async fn get_token(state: &AppState) -> ProviderResult<String> {
+        state
+            .token_manager
+            .get_token()
+            .await
+            .map_err(|e| ProviderError::Auth(e.to_string()))
+    }
+
+    fn build_client(timeout_secs: u64) -> ProviderResult<Client> {
+        Client::builder()
+            .timeout(Duration::from_secs(timeout_secs))
+            .build()
+            .map_err(|e| ProviderError::Internal(format!("Failed to create HTTP client: {e}")))
+    }
+
+    fn build_request_builder(
+        client: &Client,
+        state: &AppState,
+        request: &ChatCompletionRequest,
+        token: &str,
+        streaming: bool,
+        vertex_req: &GenerateContentRequest,
+    ) -> reqwest::RequestBuilder {
+        let (base_url, query_param) = VertexUrlBuilder::build_url(
+            &state.config.vertex,
+            &state.token_manager,
+            &request.model,
+            token,
+            streaming,
+        );
+
+        let url = if streaming {
+            format!("{base_url}:streamGenerateContent{query_param}")
+        } else {
+            format!("{base_url}:generateContent{query_param}")
+        };
+
+        let mut req_builder = client.post(&url).json(vertex_req);
+        if !state.token_manager.is_api_key() {
+            req_builder = req_builder.bearer_auth(token);
+        }
+        req_builder
+    }
+
+    async fn send_vertex_request(
+        req_builder: reqwest::RequestBuilder,
+        request: &ChatCompletionRequest,
+        request_id: &str,
+    ) -> ProviderResult<reqwest::Response> {
+        let res = req_builder.send().await.map_err(|e| {
+            if e.is_timeout() {
+                ProviderError::Timeout(format!(
+                    "Vertex API request timeout (model: {}, request_id: {}): {}",
+                    request.model, request_id, e
+                ))
+            } else {
+                ProviderError::Network(format!(
+                    "Vertex API request failed (model: {}, request_id: {}): {}",
+                    request.model, request_id, e
+                ))
+            }
+        })?;
+
+        if !res.status().is_success() {
+            let status = res.status();
+            let text = res.text().await.unwrap_or_else(|e| {
+                warn!("Failed to read Vertex error response: {}", e);
+                String::new()
+            });
+            error!("Vertex API error: {} - {}", status, text);
+            return Err(ProviderError::Unavailable(format!(
+                "Vertex API Error (model: {}, request_id: {}, status: {}): {}",
+                request.model, request_id, status, text
+            )));
+        }
+
+        Ok(res)
     }
 }
 
@@ -116,70 +195,21 @@ impl LLMProvider for VertexProvider {
         let request_id = Uuid::new_v4().to_string();
         info!("Vertex: Executing non-streaming request {}", request_id);
 
-        let token = state
-            .token_manager
-            .get_token()
-            .await
-            .map_err(|e| ProviderError::Auth(e.to_string()))?;
-
+        let token = Self::get_token(state).await?;
         let vertex_req = transform_request(request.clone())
             .map_err(|e| ProviderError::InvalidRequest(e.to_string()))?;
-
-        let client = Client::builder()
-            .timeout(Duration::from_secs(NON_STREAMING_TIMEOUT_SECS))
-            .build()
-            .map_err(|e| ProviderError::Internal(format!("Failed to create HTTP client: {}", e)))?;
-
-        let (base_url, query_param) = VertexUrlBuilder::build_url(
-            &state.config.vertex,
-            &state.token_manager,
-            &request.model,
-            &token,
-            false,
-        );
-
-        let url = format!("{}:generateContent{}", base_url, query_param);
-
-        let mut req_builder = client.post(&url).json(&vertex_req);
-        if !state.token_manager.is_api_key() {
-            req_builder = req_builder.bearer_auth(&token);
-        }
-
-        let res = req_builder.send().await.map_err(|e| {
-            if e.is_timeout() {
-                ProviderError::Timeout(format!(
-                    "Vertex API request timeout (model: {}, request_id: {}): {}",
-                    request.model, request_id, e
-                ))
-            } else {
-                ProviderError::Network(format!(
-                    "Vertex API request failed (model: {}, request_id: {}): {}",
-                    request.model, request_id, e
-                ))
-            }
-        })?;
-
-        if !res.status().is_success() {
-            let status = res.status();
-            let text = res.text().await.unwrap_or_else(|e| {
-                warn!("Failed to read Vertex error response: {}", e);
-                String::new()
-            });
-            error!("Vertex API error: {} - {}", status, text);
-            return Err(ProviderError::Unavailable(format!(
-                "Vertex API Error (model: {}, request_id: {}, status: {}): {}",
-                request.model, request_id, status, text
-            )));
-        }
-
-        let vertex_res: GenerateContentResponse = res.json().await.map_err(|e| {
+        let client = Self::build_client(NON_STREAMING_TIMEOUT_SECS)?;
+        let req_builder =
+            Self::build_request_builder(&client, state, &request, &token, false, &vertex_req);
+        let res = Self::send_vertex_request(req_builder, &request, &request_id).await?;
+        let vertex_result: GenerateContentResponse = res.json().await.map_err(|e| {
             ProviderError::Internal(format!(
                 "Failed to parse Vertex response (model: {}, request_id: {}): {}",
                 request.model, request_id, e
             ))
         })?;
 
-        let response = transform_response(vertex_res, request.model.clone(), request_id.clone()).map_err(|e| {
+        let response = transform_response(&vertex_result, request.model.clone(), request_id.clone()).map_err(|e| {
             ProviderError::Internal(format!(
                 "Failed to transform Vertex response to OpenAI format (model: {}, request_id: {}): {}",
                 request.model, request_id, e
@@ -197,61 +227,14 @@ impl LLMProvider for VertexProvider {
         let request_id = Uuid::new_v4().to_string();
         info!("Vertex: Executing streaming request {}", request_id);
 
-        let token = state
-            .token_manager
-            .get_token()
-            .await
-            .map_err(|e| ProviderError::Auth(e.to_string()))?;
-
+        let token = Self::get_token(state).await?;
         let vertex_req = transform_request(request.clone())
             .map_err(|e| ProviderError::InvalidRequest(e.to_string()))?;
+        let client = Self::build_client(STREAMING_TIMEOUT_SECS)?;
+        let req_builder =
+            Self::build_request_builder(&client, state, &request, &token, true, &vertex_req);
 
-        let client = Client::builder()
-            .timeout(Duration::from_secs(STREAMING_TIMEOUT_SECS))
-            .build()
-            .map_err(|e| ProviderError::Internal(format!("Failed to create HTTP client: {}", e)))?;
-
-        let (base_url, query_param) = VertexUrlBuilder::build_url(
-            &state.config.vertex,
-            &state.token_manager,
-            &request.model,
-            &token,
-            true,
-        );
-
-        let url = format!("{}:streamGenerateContent{}", base_url, query_param);
-
-        let mut req_builder = client.post(&url).json(&vertex_req);
-        if !state.token_manager.is_api_key() {
-            req_builder = req_builder.bearer_auth(&token);
-        }
-
-        let res = req_builder.send().await.map_err(|e| {
-            if e.is_timeout() {
-                ProviderError::Timeout(format!(
-                    "Vertex API request timeout (model: {}, request_id: {}): {}",
-                    request.model, request_id, e
-                ))
-            } else {
-                ProviderError::Network(format!(
-                    "Vertex API request failed (model: {}, request_id: {}): {}",
-                    request.model, request_id, e
-                ))
-            }
-        })?;
-
-        if !res.status().is_success() {
-            let status = res.status();
-            let text = res.text().await.unwrap_or_else(|e| {
-                warn!("Failed to read Vertex error response: {}", e);
-                String::new()
-            });
-            error!("Vertex API error: {} - {}", status, text);
-            return Err(ProviderError::Unavailable(format!(
-                "Vertex API Error (model: {}, request_id: {}, status: {}): {}",
-                request.model, request_id, status, text
-            )));
-        }
+        let res = Self::send_vertex_request(req_builder, &request, &request_id).await?;
 
         let model = request.model.clone();
         let request_id_clone = request_id.clone();
@@ -276,36 +259,35 @@ impl LLMProvider for VertexProvider {
                     }
 
                     match serde_json::from_str::<GenerateContentResponse>(cleaned) {
-                        Ok(vertex_res) => {
+                        Ok(vertex_parser) => {
                             match transform_stream_chunk(
-                                vertex_res,
+                                &vertex_parser,
                                 model.clone(),
                                 request_id_clone.clone(),
                             ) {
                                 Ok(openai_chunk) => match serde_json::to_string(&openai_chunk) {
                                     Ok(chunk_data) => {
                                         Ok::<String, Box<dyn std::error::Error + Send + Sync>>(
-                                            format!("data: {}\n\n", chunk_data),
+                                            format!("data: {chunk_data}\n\n"),
                                         )
                                     }
                                     Err(e) => {
                                         error!("Transform error: {}", e);
                                         Ok::<String, Box<dyn std::error::Error + Send + Sync>>(
-                                            format!("data: {{\"error\": \"{}\"}}", e),
+                                            format!("data: {{\"error\": \"{e}\"}}"),
                                         )
                                     }
                                 },
                                 Err(e) => {
                                     error!("Transform error: {}", e);
                                     Ok::<String, Box<dyn std::error::Error + Send + Sync>>(format!(
-                                        "data: {{\"error\": \"{}\"}}",
-                                        e
+                                        "data: {{\"error\": \"{e}\"}}"
                                     ))
                                 }
                             }
                         }
                         Err(e) => {
-                            error!("Parse error: {}", e);
+                            error!("Parse error: {e}");
                             Ok::<String, Box<dyn std::error::Error + Send + Sync>>(
                                 "data: {\"comment\": \"parse-error\"}\n\n".to_string(),
                             )
@@ -313,10 +295,9 @@ impl LLMProvider for VertexProvider {
                     }
                 }
                 Err(e) => {
-                    error!("Stream error: {}", e);
+                    error!("Stream error: {e}");
                     Ok::<String, Box<dyn std::error::Error + Send + Sync>>(format!(
-                        "data: {{\"error\": \"stream-error: {}\"}}",
-                        e
+                        "data: {{\"error\": \"stream-error: {e}\"}}"
                     ))
                 }
             });
@@ -376,6 +357,12 @@ mod tests {
             anthropic: AnthropicConfig {
                 bridge_url: "http://localhost:4001".to_string(),
             },
+            gemini_cli: crate::config::GeminiCliConfig {
+                enabled: false,
+                cli_path: None,
+                timeout_secs: 30,
+                max_concurrency: 4,
+            },
             rate_limit: RateLimitConfig {
                 capacity: 100,
                 refill_per_second: 10,
@@ -393,9 +380,9 @@ mod tests {
 
         AppState {
             config: Arc::new(config),
-            token_manager: TokenManager::new(None, None)
+            token_manager: TokenManager::new(None, None, None)
                 .expect("Failed to initialize TokenManager in test"),
-            provider_registry: Arc::new(ProviderRegistry::with_config(None)),
+            provider_registry: Arc::new(ProviderRegistry::with_config(&None, &None)),
             rate_limiter: crate::middleware::rate_limit::RateLimiter::new(100, 10),
             circuit_breaker: Arc::new(crate::openai::circuit_breaker::CircuitBreaker::new(
                 10, 60, 3,

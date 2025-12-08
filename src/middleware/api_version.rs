@@ -29,6 +29,11 @@ mod tests {
         // This will panic at runtime if invalid
         let api_version = env!("CARGO_PKG_VERSION");
         let header_value = HeaderValue::from_static(api_version);
-        assert_eq!(header_value.to_str().unwrap(), api_version);
+        assert_eq!(
+            header_value
+                .to_str()
+                .expect("api version header should be valid UTF-8"),
+            api_version
+        );
     }
 }

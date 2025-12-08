@@ -1,4 +1,5 @@
 pub mod anthropic;
+pub mod gemini_cli;
 pub mod vertex;
 
 use crate::models::openai::{ChatCompletionRequest, ChatCompletionResponse};
@@ -15,6 +16,7 @@ pub type StreamingResponse =
 pub enum Provider {
     Vertex,
     AnthropicCLI,
+    GeminiCLI,
     // Fix dead code: These variants are not implemented yet
     // TODO: Implement DeepSeek provider or remove variant
     #[allow(dead_code)]
@@ -74,8 +76,25 @@ impl ProviderRegistry {
     /// Fix hardcoded provider initialization: Currently only Vertex and Anthropic providers are registered.
     /// Registration order determines routing priority when multiple providers support the same model.
     /// TODO: Consider plugin/registry pattern or configuration-driven initialization for extensibility.
-    pub fn with_config(anthropic_bridge_url: Option<String>) -> Self {
+    #[must_use]
+    pub fn with_config(
+        anthropic_bridge_url: &Option<String>,
+        gemini_cli_config: &Option<crate::config::GeminiCliConfig>,
+    ) -> Self {
         let mut providers: Vec<Box<dyn LLMProvider>> = Vec::new();
+
+        // Register Gemini CLI provider first if enabled (takes precedence for gemini-* models)
+        if let Some(ref gemini_config) = gemini_cli_config {
+            if gemini_config.enabled {
+                providers.push(Box::new(
+                    crate::services::providers::gemini_cli::GeminiCliProvider::new(
+                        gemini_config.cli_path.clone(),
+                        Some(gemini_config.timeout_secs),
+                        Some(gemini_config.max_concurrency),
+                    ),
+                ));
+            }
+        }
 
         // Register Vertex provider (always available)
         providers.push(Box::new(
@@ -83,7 +102,7 @@ impl ProviderRegistry {
         ));
 
         // Register Anthropic provider if bridge URL is configured
-        if let Some(ref url) = anthropic_bridge_url {
+        if let Some(url) = anthropic_bridge_url {
             providers.push(Box::new(
                 crate::services::providers::anthropic::AnthropicBridgeProvider::new(url.clone()),
             ));
@@ -98,6 +117,7 @@ impl ProviderRegistry {
     /// If multiple providers support the same model, returns the first one registered.
     /// This behavior is deterministic (based on registration order) but should be documented.
     /// Consider: priority ordering, explicit model-to-provider mapping, or conflict detection.
+    #[must_use]
     pub fn route_by_model(&self, model: &str) -> Option<&dyn LLMProvider> {
         for provider in &self.providers {
             if provider.supports_model(model) {
@@ -105,6 +125,12 @@ impl ProviderRegistry {
             }
         }
         None
+    }
+
+    /// Returns the list of registered provider types for observability/CLI status.
+    #[must_use]
+    pub fn list_providers(&self) -> Vec<Provider> {
+        self.providers.iter().map(|p| p.provider_type()).collect()
     }
 }
 
@@ -114,21 +140,41 @@ mod tests {
 
     #[test]
     fn test_route_by_model_gemini() {
-        let registry = ProviderRegistry::with_config(None);
+        let registry = ProviderRegistry::with_config(&None, &None);
         assert!(registry.route_by_model("gemini-pro").is_some());
         assert!(registry.route_by_model("gemini-2.5-flash").is_some());
     }
 
     #[test]
     fn test_route_by_model_claude() {
-        let registry = ProviderRegistry::with_config(Some("http://localhost:4001".to_string()));
+        let registry =
+            ProviderRegistry::with_config(&Some("http://localhost:4001".to_string()), &None);
         assert!(registry.route_by_model("claude-3-5-sonnet").is_some());
         assert!(registry.route_by_model("claude-3-opus").is_some());
     }
 
     #[test]
     fn test_route_by_model_unknown() {
-        let registry = ProviderRegistry::with_config(None);
+        let registry = ProviderRegistry::with_config(&None, &None);
         assert!(registry.route_by_model("unknown-model").is_none());
+    }
+
+    #[test]
+    fn test_route_by_model_gemini_cli_precedence() {
+        use crate::config::GeminiCliConfig;
+
+        // Test that Gemini CLI takes precedence when enabled
+        let gemini_config = GeminiCliConfig {
+            enabled: true,
+            cli_path: None,
+            timeout_secs: 30,
+            max_concurrency: 4,
+        };
+
+        let registry = ProviderRegistry::with_config(&None, &Some(gemini_config));
+        let provider = registry
+            .route_by_model("gemini-pro")
+            .expect("gemini-pro should route to Gemini CLI when enabled");
+        assert_eq!(provider.provider_type(), Provider::GeminiCLI);
     }
 }

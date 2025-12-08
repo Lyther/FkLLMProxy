@@ -24,7 +24,18 @@ pub struct CircuitBreaker {
     timeout: Duration,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct CircuitBreakerStats {
+    pub state: CircuitState,
+    pub failure_count: u32,
+    pub success_count: u32,
+    pub failure_threshold: u32,
+    pub success_threshold: u32,
+    pub timeout_secs: u64,
+}
+
 impl CircuitBreaker {
+    #[must_use]
     pub fn new(failure_threshold: u32, timeout_secs: u64, success_threshold: u32) -> Self {
         // Validate parameters to prevent invalid state
         let failure_threshold = failure_threshold.max(1);
@@ -42,6 +53,11 @@ impl CircuitBreaker {
         }
     }
 
+    /// Execute a function with circuit breaker protection.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original error from the function `f`, or `CircuitOpenError` if the circuit is open.
     pub async fn call<F, T, E>(&self, f: F) -> Result<T, E>
     where
         F: std::future::Future<Output = Result<T, E>>,
@@ -90,34 +106,31 @@ impl CircuitBreaker {
         {
             let mut state_guard = self.state.write().await;
             // Fix redundant read: use *state_guard directly instead of reading into current_state
-            match &result {
-                Ok(_) => {
-                    if matches!(*state_guard, CircuitState::HalfOpen) {
-                        let mut count = self.success_count.write().await;
-                        *count += 1;
-                        if *count >= self.success_threshold {
-                            info!("Circuit breaker: Transitioning to Closed");
-                            *state_guard = CircuitState::Closed;
-                            *self.failure_count.write().await = 0;
-                            *count = 0;
-                        }
+            if result.is_ok() {
+                if matches!(*state_guard, CircuitState::HalfOpen) {
+                    let mut count = self.success_count.write().await;
+                    *count += 1;
+                    if *count >= self.success_threshold {
+                        info!("Circuit breaker: Transitioning to Closed");
+                        *state_guard = CircuitState::Closed;
+                        *self.failure_count.write().await = 0;
+                        *count = 0;
                     }
-                    // Fix logic bug: Don't reset failure_count on every success in Closed state
-                    // Only reset after sustained success (handled in HalfOpen) or when circuit closes
-                    // This allows failures to accumulate properly
                 }
-                Err(_) => {
-                    let mut failure_count = self.failure_count.write().await;
-                    *failure_count += 1;
-                    *self.last_failure.write().await = Some(Instant::now());
+                // Fix logic bug: Don't reset failure_count on every success in Closed state
+                // Only reset after sustained success (handled in HalfOpen) or when circuit closes
+                // This allows failures to accumulate properly
+            } else {
+                let mut failure_count = self.failure_count.write().await;
+                *failure_count += 1;
+                *self.last_failure.write().await = Some(Instant::now());
 
-                    if *failure_count >= self.failure_threshold {
-                        error!(
-                            "Circuit breaker: Transitioning to Open ({} failures)",
-                            failure_count
-                        );
-                        *state_guard = CircuitState::Open;
-                    }
+                if *failure_count >= self.failure_threshold {
+                    error!(
+                        "Circuit breaker: Transitioning to Open ({} failures)",
+                        failure_count
+                    );
+                    *state_guard = CircuitState::Open;
                 }
             }
         }
@@ -127,6 +140,18 @@ impl CircuitBreaker {
 
     pub async fn is_open(&self) -> bool {
         matches!(*self.state.read().await, CircuitState::Open)
+    }
+
+    /// Returns a snapshot of breaker state for diagnostics.
+    pub async fn stats(&self) -> CircuitBreakerStats {
+        CircuitBreakerStats {
+            state: *self.state.read().await,
+            failure_count: *self.failure_count.read().await,
+            success_count: *self.success_count.read().await,
+            failure_threshold: self.failure_threshold,
+            success_threshold: self.success_threshold,
+            timeout_secs: self.timeout.as_secs(),
+        }
     }
 
     // Test helpers

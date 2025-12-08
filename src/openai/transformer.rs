@@ -9,6 +9,11 @@ use uuid::Uuid;
 // Fix hardcoded action: Make action configurable via constant
 const DEFAULT_BACKEND_ACTION: &str = "next";
 
+/// Transforms an OpenAI-style chat completion request into a backend request.
+///
+/// # Errors
+///
+/// Returns an error if the input request cannot be converted to the backend format.
 pub fn transform_to_backend(
     model: &str,
     messages: &[crate::models::openai::ChatMessage],
@@ -87,9 +92,10 @@ pub fn transform_sse_to_openai_chunk(
     model: &str,
     request_id: &str,
 ) -> Option<ChatCompletionChunk> {
-    // Fix timestamp overflow: clamp timestamp to prevent overflow
-    let timestamp = chrono::Utc::now().timestamp();
-    let created = timestamp.max(0) as u64;
+    let created = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
 
     if event.event_type == "done" {
         return Some(ChatCompletionChunk {
@@ -147,9 +153,10 @@ pub fn transform_sse_to_openai_chunk(
         BackendContent::String(s) => s,
     };
 
-    // Fix timestamp overflow: clamp timestamp to prevent overflow
-    let timestamp = chrono::Utc::now().timestamp();
-    let created = timestamp.max(0) as u64;
+    let created = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
 
     Some(ChatCompletionChunk {
         id: request_id.to_string(),

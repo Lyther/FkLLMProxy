@@ -5,18 +5,17 @@ use tracing::warn;
 pub async fn security_headers_middleware(request: Request, next: Next) -> Response {
     // Strict-Transport-Security: Only set if HTTPS is detected
     // Check if request was made over HTTPS (via X-Forwarded-Proto or scheme)
-    let is_https = request
+    let is_https = if let Some(proto) = request
         .headers()
         .get("x-forwarded-proto")
         .and_then(|h| h.to_str().ok())
-        .map(|s| s == "https")
-        .unwrap_or_else(|| {
-            request
-                .uri()
-                .scheme()
-                .map(|s| s.as_str() == "https")
-                .unwrap_or(false)
-        });
+    {
+        proto == "https"
+    } else if let Some(scheme) = request.uri().scheme() {
+        scheme.as_str() == "https"
+    } else {
+        false
+    };
 
     let mut response = next.run(request).await;
 

@@ -19,8 +19,7 @@ struct CachedResponse {
 impl CachedResponse {
     fn is_expired(&self) -> bool {
         let now = Utc::now();
-        // Fix: Prevent overflow when converting u64 to i64 for chrono::Duration
-        let ttl_secs_i64 = self.ttl_secs.min(i64::MAX as u64) as i64;
+        let ttl_secs_i64 = i64::try_from(self.ttl_secs).unwrap_or(i64::MAX);
         let expires_at = self.cached_at + chrono::Duration::seconds(ttl_secs_i64);
         now > expires_at
     }
@@ -34,6 +33,7 @@ pub struct Cache {
 }
 
 impl Cache {
+    #[must_use]
     pub fn new(enabled: bool, default_ttl_secs: u64) -> Self {
         Self {
             store: Arc::new(RwLock::new(HashMap::new())),
@@ -42,6 +42,7 @@ impl Cache {
         }
     }
 
+    #[must_use]
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
@@ -55,8 +56,7 @@ impl Cache {
         let temperature_str = format!("{:.6}", request.temperature); // Use fixed precision
         let max_tokens_str = request
             .max_tokens
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "none".to_string());
+            .map_or_else(|| "none".to_string(), |v| v.to_string());
         let top_p_str = format!("{:.6}", request.top_p);
         let stop_str = request
             .stop
@@ -306,7 +306,7 @@ mod tests {
                 model: "test-model".to_string(),
                 messages: vec![ChatMessage {
                     role: Role::User,
-                    content: format!("test{}", i),
+                    content: format!("test{i}"),
                     name: None,
                 }],
                 stream: false,

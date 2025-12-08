@@ -1,3 +1,4 @@
+use crate::openai::metrics::MetricsStats;
 use crate::state::AppState;
 use axum::{
     extract::State,
@@ -48,8 +49,7 @@ fn format_prometheus_metric(
     let validated_type = validate_metric_type(metric_type);
 
     format!(
-        "# HELP {} {}\n# TYPE {} {}\n{} {}\n",
-        validated_name, help, validated_name, validated_type, validated_name, value
+        "# HELP {validated_name} {help}\n# TYPE {validated_name} {validated_type}\n{validated_name} {value}\n"
     )
 }
 
@@ -62,120 +62,157 @@ fn validate_metric_value(value: f64) -> f64 {
 }
 
 pub async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let stats = state.metrics.get_stats().await;
+    let metrics_data = state.metrics.get_stats().await;
     (
         [(
             axum::http::header::CACHE_CONTROL,
             axum::http::HeaderValue::from_static(CACHE_CONTROL_NO_CACHE),
         )],
-        Json(stats),
+        Json(metrics_data),
     )
 }
 
-pub async fn prometheus_metrics_handler(State(state): State<AppState>) -> Response {
-    let stats = state.metrics.get_stats().await;
+fn validate_metrics_stats(stats: &MetricsStats) -> ValidatedMetricsStats {
+    ValidatedMetricsStats {
+        cache_hit_rate: validate_metric_value(stats.cache_hit_rate),
+        waf_block_rate: validate_metric_value(stats.waf_block_rate),
+        success_rate: validate_metric_value(stats.success_rate),
+        avg_arkose_solve_time_ms: validate_metric_value(stats.avg_arkose_solve_time_ms),
+        avg_latency_ms: validate_metric_value(stats.avg_latency_ms),
+    }
+}
 
-    // Validate stats values before formatting
-    let cache_hit_rate = validate_metric_value(stats.cache_hit_rate);
-    let waf_block_rate = validate_metric_value(stats.waf_block_rate);
-    let success_rate = validate_metric_value(stats.success_rate);
-    let avg_arkose_solve_time_ms = validate_metric_value(stats.avg_arkose_solve_time_ms);
-    let avg_latency_ms = validate_metric_value(stats.avg_latency_ms);
+struct ValidatedMetricsStats {
+    cache_hit_rate: f64,
+    waf_block_rate: f64,
+    success_rate: f64,
+    avg_arkose_solve_time_ms: f64,
+    avg_latency_ms: f64,
+}
 
-    // Define metrics using iterator to reduce duplication
-    let metric_definitions: Vec<(&str, &str, &str, String)> = vec![
-        (
+fn create_metric_definitions(
+    stats: &MetricsStats,
+    validated: &ValidatedMetricsStats,
+) -> Vec<(&'static str, &'static str, &'static str, String)> {
+    let mut metrics = Vec::with_capacity(14);
+
+    // Cache metrics
+    metrics.extend([
+        create_counter_metric(
             "cache_hits_total",
             "Total number of cache hits",
-            "counter",
-            stats.cache_hits.to_string(),
+            stats.cache_hits,
         ),
-        (
+        create_counter_metric(
             "cache_misses_total",
             "Total number of cache misses",
-            "counter",
-            stats.cache_misses.to_string(),
+            stats.cache_misses,
         ),
-        (
+        create_gauge_metric(
             "cache_hit_rate",
             "Cache hit rate percentage",
-            "gauge",
-            format!("{:.2}", cache_hit_rate),
+            validated.cache_hit_rate,
         ),
-        (
+    ]);
+
+    // WAF metrics
+    metrics.extend([
+        create_counter_metric(
             "waf_blocks_total",
             "Total number of WAF blocks",
-            "counter",
-            stats.waf_blocks.to_string(),
+            stats.waf_blocks,
         ),
-        (
+        create_gauge_metric(
             "waf_block_rate",
             "WAF block rate percentage",
-            "gauge",
-            format!("{:.2}", waf_block_rate),
+            validated.waf_block_rate,
         ),
-        (
+    ]);
+
+    // Arkose metrics
+    metrics.extend([
+        create_counter_metric(
             "arkose_solves_total",
             "Total number of Arkose solves",
-            "counter",
-            stats.arkose_solves.to_string(),
+            stats.arkose_solves,
         ),
-        (
+        create_gauge_metric(
             "arkose_solve_time_ms",
             "Average Arkose solve time in milliseconds",
-            "gauge",
-            format!("{:.2}", avg_arkose_solve_time_ms),
+            validated.avg_arkose_solve_time_ms,
         ),
-        (
+    ]);
+
+    // Request metrics
+    metrics.extend([
+        create_counter_metric(
             "requests_total",
             "Total number of requests",
-            "counter",
-            stats.total_requests.to_string(),
+            stats.total_requests,
         ),
-        (
+        create_counter_metric(
             "requests_failed_total",
             "Total number of failed requests",
-            "counter",
-            stats.failed_requests.to_string(),
+            stats.failed_requests,
         ),
-        (
+        create_gauge_metric(
             "request_success_rate",
             "Request success rate percentage",
-            "gauge",
-            format!("{:.2}", success_rate),
+            validated.success_rate,
         ),
-        (
+        create_gauge_metric(
             "request_latency_ms",
             "Average request latency in milliseconds",
-            "gauge",
-            format!("{:.2}", avg_latency_ms),
+            validated.avg_latency_ms,
         ),
-        (
+        create_simple_gauge_metric(
             "request_latency_p50_ms",
             "50th percentile request latency in milliseconds",
-            "gauge",
-            stats.p50_latency_ms.to_string(),
+            stats.p50_latency_ms,
         ),
-        (
+        create_simple_gauge_metric(
             "request_latency_p95_ms",
             "95th percentile request latency in milliseconds",
-            "gauge",
-            stats.p95_latency_ms.to_string(),
+            stats.p95_latency_ms,
         ),
-        (
+        create_simple_gauge_metric(
             "request_latency_p99_ms",
             "99th percentile request latency in milliseconds",
-            "gauge",
-            stats.p99_latency_ms.to_string(),
+            stats.p99_latency_ms,
         ),
-    ];
+    ]);
 
-    // Calculate required capacity dynamically
+    metrics
+}
+
+fn create_counter_metric(
+    name: &'static str,
+    help: &'static str,
+    value: impl std::fmt::Display,
+) -> (&'static str, &'static str, &'static str, String) {
+    (name, help, "counter", value.to_string())
+}
+
+fn create_gauge_metric(
+    name: &'static str,
+    help: &'static str,
+    value: impl std::fmt::Display,
+) -> (&'static str, &'static str, &'static str, String) {
+    (name, help, "gauge", format!("{value:.2}"))
+}
+
+fn create_simple_gauge_metric(
+    name: &'static str,
+    help: &'static str,
+    value: impl std::fmt::Display,
+) -> (&'static str, &'static str, &'static str, String) {
+    (name, help, "gauge", value.to_string())
+}
+
+fn build_prometheus_output(metric_definitions: &[(&str, &str, &str, String)]) -> String {
     let estimated_size: usize = metric_definitions
         .iter()
-        .map(|(name, help, _, _)| {
-            name.len() + help.len() + 50 // Rough estimate per metric
-        })
+        .map(|(name, help, _, _)| name.len() + help.len() + 50)
         .sum();
     let mut prom_output = String::with_capacity(estimated_size.max(2048));
 
@@ -183,7 +220,11 @@ pub async fn prometheus_metrics_handler(State(state): State<AppState>) -> Respon
         prom_output.push_str(&format_prometheus_metric(name, help, metric_type, value));
     }
 
-    match Response::builder()
+    prom_output
+}
+
+fn build_prometheus_response(body: String) -> Result<Response, axum::http::Error> {
+    Response::builder()
         .status(200)
         .header(
             "Content-Type",
@@ -193,22 +234,35 @@ pub async fn prometheus_metrics_handler(State(state): State<AppState>) -> Respon
             "Cache-Control",
             HeaderValue::from_static(CACHE_CONTROL_NO_CACHE),
         )
-        .body(prom_output.into())
+        .body(body.into())
+}
+
+fn build_error_response() -> Response {
+    match Response::builder()
+        .status(500)
+        .body("Internal server error".into())
     {
+        Ok(response) => response,
+        Err(build_err) => {
+            tracing::error!("Failed to build error response: {}", build_err);
+            let mut response = Response::new("Internal server error".into());
+            *response.status_mut() = axum::http::StatusCode::INTERNAL_SERVER_ERROR;
+            response
+        }
+    }
+}
+
+pub async fn prometheus_metrics_handler(State(state): State<AppState>) -> Response {
+    let metrics_stats = state.metrics.get_stats().await;
+    let validated_stats = validate_metrics_stats(&metrics_stats);
+    let metric_definitions = create_metric_definitions(&metrics_stats, &validated_stats);
+    let prom_output = build_prometheus_output(&metric_definitions);
+
+    match build_prometheus_response(prom_output) {
         Ok(response) => response,
         Err(e) => {
             tracing::error!("Failed to build Prometheus metrics response: {}", e);
-            // Fix double unwrap_or_else: Use proper error handling
-            Response::builder()
-                .status(500)
-                .body("Internal server error".into())
-                .unwrap_or_else(|build_err| {
-                    tracing::error!("Failed to build error response: {}", build_err);
-                    // Last resort: create minimal response
-                    let mut response = Response::new("Internal server error".into());
-                    *response.status_mut() = axum::http::StatusCode::INTERNAL_SERVER_ERROR;
-                    response
-                })
+            build_error_response()
         }
     }
 }
