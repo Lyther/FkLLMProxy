@@ -35,8 +35,14 @@ fn extract_rate_limit_key(request: &Request) -> String {
         let hash = hasher.finalize();
         // Use first 16 bytes of hash as key (32 hex chars) to prevent token exposure
         // Format as hex string: each byte becomes 2 hex chars
-        let hash_hex: String = hash[..16].iter().map(|b| format!("{:02x}", b)).collect();
-        return format!("auth:{}", hash_hex);
+        let hash_hex: String = hash[..16]
+            .iter()
+            .fold(String::with_capacity(32), |mut acc, b| {
+                use std::fmt::Write;
+                let _ = write!(acc, "{b:02x}");
+                acc
+            });
+        return format!("auth:{hash_hex}");
     }
 
     // Fix incomplete IP parsing: Handle RFC 7239 format properly
@@ -84,12 +90,23 @@ fn extract_rate_limit_key(request: &Request) -> String {
     UNKNOWN_KEY.to_string()
 }
 
+/// Token bucket rate limiter for API requests.
+///
+/// Uses SHA256-hashed auth tokens as keys to prevent token exposure.
+/// Implements LRU eviction for memory efficiency.
 #[derive(Clone)]
 pub struct RateLimiter {
     buckets: Arc<RwLock<HashMap<String, TokenBucket>>>,
     capacity: u32,
     refill_rate: Duration,
     last_cleanup: Arc<RwLock<Instant>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RateLimitStats {
+    pub capacity: u32,
+    pub refill_per_second: u32,
+    pub active_keys: usize,
 }
 
 #[derive(Clone)]
@@ -99,6 +116,7 @@ struct TokenBucket {
     last_access: Instant, // Track last access for LRU eviction
 }
 
+/// Information about current rate limit status for a request.
 #[derive(Debug, Clone)]
 pub struct RateLimitInfo {
     pub limit: u32,
@@ -107,6 +125,7 @@ pub struct RateLimitInfo {
 }
 
 impl RateLimiter {
+    #[must_use]
     pub fn new(capacity: u32, refill_per_second: u32) -> Self {
         // Validate refill_per_second to prevent division by zero
         let refill_per_second = refill_per_second.max(1);
@@ -120,12 +139,14 @@ impl RateLimiter {
 
     fn calculate_tokens_to_add(elapsed: Duration, refill_rate: Duration) -> u32 {
         // Fix: Prevent overflow when converting duration to nanoseconds
-        let elapsed_nanos = elapsed.as_nanos().min(u64::MAX as u128) as u64;
-        let refill_nanos = refill_rate.as_nanos().min(u64::MAX as u128) as u64;
+        let elapsed_nanos =
+            u64::try_from(elapsed.as_nanos().min(u128::from(u64::MAX))).unwrap_or(u64::MAX);
+        let refill_nanos =
+            u64::try_from(refill_rate.as_nanos().min(u128::from(u64::MAX))).unwrap_or(u64::MAX);
         if refill_nanos == 0 {
             return 0;
         }
-        (elapsed_nanos / refill_nanos) as u32
+        u32::try_from(elapsed_nanos / refill_nanos).unwrap_or(u32::MAX)
     }
 
     async fn cleanup_if_needed(&self) {
@@ -223,11 +244,12 @@ impl RateLimiter {
         let tokens_needed = self.capacity.saturating_sub(current_tokens);
         let reset_seconds = if tokens_needed > 0 {
             // Fix: Prevent overflow when converting duration to nanoseconds
-            let refill_nanos = self.refill_rate.as_nanos().min(u64::MAX as u128) as u64;
+            let refill_nanos = u64::try_from(self.refill_rate.as_nanos().min(u128::from(u64::MAX)))
+                .unwrap_or(u64::MAX);
             if refill_nanos == 0 {
                 0
             } else {
-                (tokens_needed as u64 * refill_nanos) / 1_000_000_000
+                u64::from(tokens_needed) * refill_nanos / 1_000_000_000
             }
         } else {
             0
@@ -247,19 +269,37 @@ impl RateLimiter {
             reset: reset_timestamp,
         }
     }
+
+    /// Returns a lightweight snapshot of limiter configuration and active bucket count.
+    pub async fn stats(&self) -> RateLimitStats {
+        let buckets = self.buckets.read().await;
+        let per_second = if self.refill_rate.as_nanos() == 0 {
+            0
+        } else {
+            let nanos = self.refill_rate.as_nanos();
+            let rounded = (1_000_000_000u128 + nanos / 2) / nanos;
+            let capped = rounded.min(u128::from(u32::MAX));
+            u32::try_from(capped).unwrap_or(u32::MAX)
+        };
+        RateLimitStats {
+            capacity: self.capacity,
+            refill_per_second: per_second,
+            active_keys: buckets.len(),
+        }
+    }
 }
 
 fn build_rate_limit_headers(
     info: &RateLimitInfo,
 ) -> Result<Vec<(axum::http::HeaderName, axum::http::HeaderValue)>, String> {
     let limit_header = axum::http::HeaderValue::from_str(&info.limit.to_string())
-        .map_err(|e| format!("Failed to construct X-RateLimit-Limit header: {}", e))?;
+        .map_err(|e| format!("Failed to construct X-RateLimit-Limit header: {e}"))?;
 
     let remaining_header = axum::http::HeaderValue::from_str(&info.remaining.to_string())
-        .map_err(|e| format!("Failed to construct X-RateLimit-Remaining header: {}", e))?;
+        .map_err(|e| format!("Failed to construct X-RateLimit-Remaining header: {e}"))?;
 
     let reset_header = axum::http::HeaderValue::from_str(&info.reset.to_string())
-        .map_err(|e| format!("Failed to construct X-RateLimit-Reset header: {}", e))?;
+        .map_err(|e| format!("Failed to construct X-RateLimit-Reset header: {e}"))?;
 
     Ok(vec![
         (
@@ -277,6 +317,15 @@ fn build_rate_limit_headers(
     ])
 }
 
+/// Rate limiting middleware using token bucket algorithm.
+///
+/// Limits requests per IP address or authenticated user.
+/// Uses SHA256 hashing of auth tokens to prevent token exposure in rate limit keys.
+///
+/// # Errors
+///
+/// Returns `StatusCode::INTERNAL_SERVER_ERROR` if rate limit header construction fails.
+/// Returns `StatusCode::TOO_MANY_REQUESTS` if the rate limit is exceeded.
 pub async fn rate_limit_middleware(
     State(limiter): State<RateLimiter>,
     request: Request,
@@ -309,13 +358,13 @@ pub async fn rate_limit_middleware(
                 }
             }
             Err(e) => {
-                error!("Failed to build rate limit headers: {}", e);
+                error!("Failed to build rate limit headers: {e}");
                 return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
         }
 
         let response = response_builder.body(error_body.into()).map_err(|e| {
-            error!("Failed to build rate limit response: {}", e);
+            error!("Failed to build rate limit response: {e}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
         return Ok(response);
@@ -330,7 +379,7 @@ pub async fn rate_limit_middleware(
             }
         }
         Err(e) => {
-            error!("Failed to build rate limit headers: {}", e);
+            error!("Failed to build rate limit headers: {e}");
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     }
@@ -384,10 +433,10 @@ mod tests {
         let info = RateLimitInfo {
             limit: 100,
             remaining: 50,
-            reset: 1234567890,
+            reset: 1_234_567_890,
         };
 
-        let headers = build_rate_limit_headers(&info).unwrap();
+        let headers = build_rate_limit_headers(&info).expect("rate limit headers should construct");
         assert_eq!(headers.len(), 3);
     }
 
@@ -406,12 +455,18 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         let mut last_cleanup = limiter.last_cleanup.write().await;
-        *last_cleanup = Instant::now() - CLEANUP_INTERVAL - Duration::from_secs(1);
+        *last_cleanup = Instant::now()
+            .checked_sub(CLEANUP_INTERVAL)
+            .and_then(|i| i.checked_sub(Duration::from_secs(1)))
+            .unwrap_or(Instant::now());
         drop(last_cleanup);
 
         let mut buckets = limiter.buckets.write().await;
+        let old_time = Instant::now()
+            .checked_sub(CLEANUP_INTERVAL * 3)
+            .unwrap_or(Instant::now());
         for (_, bucket) in buckets.iter_mut() {
-            bucket.last_refill = Instant::now() - CLEANUP_INTERVAL * 3;
+            bucket.last_refill = old_time;
         }
         drop(buckets);
 

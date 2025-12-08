@@ -15,6 +15,17 @@ fn hash_token(token: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Authentication middleware for API requests.
+///
+/// Validates Bearer tokens using constant-time comparison to prevent timing attacks.
+/// Supports optional authentication mode and master key authentication.
+///
+/// # Errors
+///
+/// Returns `StatusCode::UNAUTHORIZED` if:
+/// - Authentication is required but no Authorization header is provided
+/// - The Authorization header is not in "Bearer <token>" format
+/// - The provided token does not match the master key
 pub async fn auth_middleware(
     State(state): State<AppState>,
     req: Request<axum::body::Body>,
@@ -48,7 +59,7 @@ pub async fn auth_middleware(
     if !bool::from(tokens_match) {
         warn!(
             "Invalid API Key attempt: {}...",
-            &token_hash[..8.min(token_hash.len())]
+            &token_hash[..token_hash.len().min(8)]
         );
         return Err(StatusCode::UNAUTHORIZED);
     }
@@ -76,7 +87,7 @@ mod tests {
             server: ServerConfig {
                 host: "127.0.0.1".to_string(),
                 port: 4000,
-                max_request_size: 10 * 1024 * 1024,
+                max_request_size: 10_000_000,
             },
             auth: AuthConfig {
                 require_auth,
@@ -102,6 +113,12 @@ mod tests {
             anthropic: AnthropicConfig {
                 bridge_url: "http://localhost:4001".to_string(),
             },
+            gemini_cli: crate::config::GeminiCliConfig {
+                enabled: false,
+                cli_path: None,
+                timeout_secs: 30,
+                max_concurrency: 4,
+            },
             rate_limit: RateLimitConfig {
                 capacity: 100,
                 refill_per_second: 10,
@@ -119,10 +136,10 @@ mod tests {
 
         AppState {
             config: Arc::new(config),
-            token_manager: crate::services::auth::TokenManager::new(None, None)
+            token_manager: crate::services::auth::TokenManager::new(None, None, None)
                 .expect("Failed to initialize TokenManager in test"),
             provider_registry: Arc::new(crate::services::providers::ProviderRegistry::with_config(
-                None,
+                &None, &None,
             )),
             rate_limiter: crate::middleware::rate_limit::RateLimiter::new(100, 10),
             circuit_breaker: Arc::new(crate::openai::circuit_breaker::CircuitBreaker::new(
@@ -143,8 +160,14 @@ mod tests {
                 auth_middleware,
             ))
             .with_state(state);
-        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
-        let response = app.oneshot(req).await.unwrap();
+        let req = Request::builder()
+            .uri("/test")
+            .body(Body::empty())
+            .expect("request should build");
+        let response = app
+            .oneshot(req)
+            .await
+            .expect("request execution should succeed");
         assert_eq!(response.status(), StatusCode::OK);
     }
 
@@ -158,8 +181,14 @@ mod tests {
                 auth_middleware,
             ))
             .with_state(state);
-        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
-        let response = app.oneshot(req).await.unwrap();
+        let req = Request::builder()
+            .uri("/test")
+            .body(Body::empty())
+            .expect("request should build");
+        let response = app
+            .oneshot(req)
+            .await
+            .expect("request execution should succeed");
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -177,8 +206,11 @@ mod tests {
             .uri("/test")
             .header("Authorization", "Bearer wrong-key")
             .body(Body::empty())
-            .unwrap();
-        let response = app.oneshot(req).await.unwrap();
+            .expect("request should build");
+        let response = app
+            .oneshot(req)
+            .await
+            .expect("request execution should succeed");
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -196,8 +228,11 @@ mod tests {
             .uri("/test")
             .header("Authorization", "Bearer test-key")
             .body(Body::empty())
-            .unwrap();
-        let response = app.oneshot(req).await.unwrap();
+            .expect("request should build");
+        let response = app
+            .oneshot(req)
+            .await
+            .expect("request execution should succeed");
         assert_eq!(response.status(), StatusCode::OK);
     }
 }

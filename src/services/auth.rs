@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
-use std::sync::Arc;
-use std::time::Duration;
+use std::{env, sync::Arc, time::Duration};
 use tokio::process::Command;
 use tokio::sync::RwLock;
 use tokio::time::timeout;
@@ -25,26 +24,44 @@ struct CachedToken {
 }
 
 impl TokenManager {
-    pub fn new(api_key: Option<String>, credentials_file: Option<String>) -> Result<Self> {
+    /// Creates a new `TokenManager`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the credentials file does not exist or is not a file.
+    pub fn new(
+        api_key: Option<String>,
+        credentials_file: Option<String>,
+        project_id: Option<String>,
+    ) -> Result<Self> {
         // Validate credentials_file exists and is readable if provided
         if let Some(ref file) = credentials_file {
             let path = std::path::Path::new(file);
             if !path.exists() {
-                return Err(anyhow::anyhow!("Credentials file does not exist: {}", file));
+                return Err(anyhow::anyhow!("Credentials file does not exist: {file}"));
             }
             if !path.is_file() {
-                return Err(anyhow::anyhow!("Credentials path is not a file: {}", file));
+                return Err(anyhow::anyhow!("Credentials path is not a file: {file}"));
             }
             // Check readability by attempting to read metadata
             if std::fs::metadata(file).is_err() {
                 return Err(anyhow::anyhow!(
-                    "Cannot read credentials file (permission denied?): {}",
-                    file
+                    "Cannot read credentials file (permission denied?): {file}"
                 ));
             }
         }
 
-        let project_id = Self::extract_project_id(&credentials_file)?;
+        let project_id = project_id
+            .or_else(|| env::var("APP_VERTEX__PROJECT_ID").ok())
+            .or_else(|| env::var("GOOGLE_CLOUD_PROJECT").ok())
+            .or_else(|| Self::extract_project_id(credentials_file.as_ref()))
+            .and_then(|pid| {
+                if pid.trim().is_empty() {
+                    None
+                } else {
+                    Some(pid)
+                }
+            });
 
         Ok(Self {
             api_key,
@@ -54,14 +71,24 @@ impl TokenManager {
         })
     }
 
+    #[must_use]
     pub fn is_api_key(&self) -> bool {
         self.api_key.is_some()
     }
 
+    #[must_use]
     pub fn get_project_id(&self) -> Option<&str> {
         self.project_id.as_deref()
     }
 
+    /// Gets an access token for authentication.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - No API key is configured and gcloud authentication fails
+    /// - The credentials file is invalid or inaccessible
+    /// - gcloud command execution fails or times out
     pub async fn get_token(&self) -> Result<String> {
         if let Some(key) = &self.api_key {
             return Ok(key.clone());
@@ -72,10 +99,11 @@ impl TokenManager {
         {
             let cached = self.cached_token.read().await;
             if let Some(ref cached_token) = *cached {
-                // Fix timestamp overflow: clamp timestamp to prevent overflow
-                let now = chrono::Utc::now().timestamp();
-                let now_u64 = now.max(0) as u64;
-                if now_u64 < cached_token.expires_at {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                if now < cached_token.expires_at {
                     return Ok(cached_token.token.clone());
                 }
             }
@@ -86,9 +114,11 @@ impl TokenManager {
 
         // Double-check: another thread might have updated cache while we waited for write lock
         if let Some(ref cached_token) = *cached {
-            let now = chrono::Utc::now().timestamp();
-            let now_u64 = now.max(0) as u64;
-            if now_u64 < cached_token.expires_at {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            if now < cached_token.expires_at {
                 return Ok(cached_token.token.clone());
             }
         }
@@ -98,10 +128,11 @@ impl TokenManager {
             .await
             .context("Failed to fetch Google Cloud access token")?;
 
-        // Fix timestamp overflow: clamp timestamp to prevent overflow
-        let now = chrono::Utc::now().timestamp();
-        let now_u64 = now.max(0) as u64;
-        let expires_at = now_u64.saturating_add(TOKEN_CACHE_TTL_SECS);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let expires_at = now.saturating_add(TOKEN_CACHE_TTL_SECS);
 
         *cached = Some(CachedToken {
             token: token.clone(),
@@ -138,7 +169,7 @@ impl TokenManager {
                 if let Some(ref creds_file) = self.credentials_file {
                     // Validate file still exists before using (could have been deleted)
                     if !std::path::Path::new(creds_file).exists() {
-                        anyhow::bail!("Credentials file no longer exists: {}", creds_file);
+                        anyhow::bail!("Credentials file no longer exists: {creds_file}");
                     }
                     cmd.env("GOOGLE_APPLICATION_CREDENTIALS", creds_file);
                 }
@@ -168,21 +199,20 @@ impl TokenManager {
                 }
                 Ok(Err(e)) => {
                     last_error = Some(
-                        anyhow::anyhow!("Failed to execute gcloud command: {}", e)
+                        anyhow::anyhow!("Failed to execute gcloud command: {e}")
                             .context("gcloud command execution failed"),
                     );
                 }
                 Err(_) => {
                     last_error = Some(anyhow::anyhow!(
-                        "gcloud command timed out after {} seconds",
-                        GCLOUD_TIMEOUT_SECS
+                        "gcloud command timed out after {GCLOUD_TIMEOUT_SECS} seconds"
                     ));
                 }
             }
         }
 
         Err(last_error.unwrap_or_else(|| {
-            anyhow::anyhow!("Failed to get access token after {} retries", MAX_RETRIES)
+            anyhow::anyhow!("Failed to get access token after {MAX_RETRIES} retries")
         }))
         .context(if use_application_default {
             "Failed to get access token using application-default credentials. Ensure gcloud CLI is installed and authenticated, or set GOOGLE_APPLICATION_CREDENTIALS"
@@ -191,13 +221,18 @@ impl TokenManager {
         })
     }
 
-    fn extract_project_id(credentials_file: &Option<String>) -> Result<Option<String>> {
-        if let Some(ref file) = credentials_file {
-            if let Ok(contents) = std::fs::read_to_string(file) {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents) {
-                    if let Some(project_id) = json.get("project_id").and_then(|v| v.as_str()) {
-                        return Ok(Some(project_id.to_string()));
+    fn extract_project_id(credentials_file: Option<&String>) -> Option<String> {
+        if let Some(file) = credentials_file {
+            match std::fs::read_to_string(file) {
+                Ok(contents) => {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents) {
+                        if let Some(project_id) = json.get("project_id").and_then(|v| v.as_str()) {
+                            return Some(project_id.to_string());
+                        }
                     }
+                }
+                Err(e) => {
+                    warn!("Failed to read credentials file {file}: {e}");
                 }
             }
         }
@@ -214,7 +249,7 @@ impl TokenManager {
                 Ok(project) => {
                     let project = project.trim().to_string();
                     if !project.is_empty() {
-                        return Ok(Some(project));
+                        return Some(project);
                     }
                 }
                 Err(e) => {
@@ -234,10 +269,13 @@ impl TokenManager {
         }
 
         if let Ok(project) = std::env::var("GOOGLE_CLOUD_PROJECT") {
-            return Ok(Some(project));
+            let trimmed = project.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
         }
 
-        Ok(None)
+        None
     }
 }
 
@@ -248,7 +286,8 @@ mod tests {
     #[tokio::test]
     async fn test_token_manager_api_key() {
         let api_key = Some("test-api-key-123".to_string());
-        let tm = TokenManager::new(api_key.clone(), None).expect("Should create TokenManager");
+        let tm =
+            TokenManager::new(api_key.clone(), None, None).expect("Should create TokenManager");
 
         assert!(tm.is_api_key());
         let token = tm.get_token().await.expect("Should get token");
@@ -257,16 +296,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_token_manager_no_credentials() {
-        let tm = TokenManager::new(None, None);
+        let tm = TokenManager::new(None, None, None);
         assert!(tm.is_ok());
-        let tm = tm.unwrap();
+        let tm = tm.expect("TokenManager should initialize without credentials");
         assert!(!tm.is_api_key());
     }
 
     #[test]
     fn test_token_manager_invalid_credentials_file() {
         // Test with non-existent file
-        let result = TokenManager::new(None, Some("/nonexistent/path/to/file.json".to_string()));
+        let result = TokenManager::new(
+            None,
+            Some("/nonexistent/path/to/file.json".to_string()),
+            None,
+        );
         assert!(result.is_err());
         let err_msg = result.err().expect("Should have error").to_string();
         assert!(
@@ -275,7 +318,7 @@ mod tests {
         );
 
         // Test with directory instead of file
-        let result = TokenManager::new(None, Some("/tmp".to_string()));
+        let result = TokenManager::new(None, Some("/tmp".to_string()), None);
         assert!(result.is_err());
         let err_msg = result.err().expect("Should have error").to_string();
         assert!(
@@ -288,7 +331,7 @@ mod tests {
     async fn test_token_cache_expiration() {
         // This test verifies cache expiration logic
         // Note: Actual gcloud calls will fail in test environment, but we can test the cache logic
-        let tm = TokenManager::new(None, None).expect("Should create TokenManager");
+        let tm = TokenManager::new(None, None, None).expect("Should create TokenManager");
 
         // First call should attempt to fetch (will fail without gcloud, but tests cache logic)
         let _ = tm.get_token().await;
@@ -296,8 +339,7 @@ mod tests {
         // Verify cache structure exists
         let cached = tm.cached_token.read().await;
         // Cache might be None if fetch failed, which is expected in test environment
-        if cached.is_some() {
-            let cached_token = cached.as_ref().unwrap();
+        if let Some(cached_token) = cached.as_ref() {
             assert!(!cached_token.token.is_empty());
             assert!(cached_token.expires_at > 0);
         }
@@ -306,7 +348,7 @@ mod tests {
     #[tokio::test]
     async fn test_concurrent_token_access() {
         // Test that concurrent calls don't cause race conditions
-        let tm = TokenManager::new(None, None).expect("Should create TokenManager");
+        let tm = TokenManager::new(None, None, None).expect("Should create TokenManager");
 
         // Spawn multiple concurrent token requests
         let mut handles = vec![];
@@ -330,7 +372,7 @@ mod tests {
     #[tokio::test]
     async fn test_token_cache_race_condition_prevention() {
         // Test that double-checked locking prevents multiple concurrent fetches
-        let tm = TokenManager::new(None, None).expect("Should create TokenManager");
+        let tm = TokenManager::new(None, None, None).expect("Should create TokenManager");
 
         // Spawn multiple concurrent requests
         let mut handles = vec![];
@@ -366,8 +408,7 @@ mod tests {
             std::env::set_var("GOOGLE_CLOUD_PROJECT", "test-project-123");
         }
 
-        let project_id =
-            TokenManager::extract_project_id(&None).expect("Should extract project ID");
+        let project_id = TokenManager::extract_project_id(None);
         // gcloud CLI may override env var, so we check the value if present
         if let Some(ref id) = project_id {
             assert!(!id.is_empty(), "Project ID should not be empty if present");
@@ -393,7 +434,7 @@ mod tests {
         // Verify env var is actually removed
         assert!(std::env::var("GOOGLE_CLOUD_PROJECT").is_err());
 
-        let project_id = TokenManager::extract_project_id(&None).expect("Should return Option");
+        let project_id = TokenManager::extract_project_id(None);
         // Note: gcloud CLI may return a project ID even if env var is not set
         // So we just verify the function returns without error, not that it's None
         // The actual value depends on gcloud configuration
@@ -413,10 +454,8 @@ mod tests {
         let creds_json = r#"{"project_id": "test-project-from-file", "type": "service_account"}"#;
         std::fs::write(&temp_file, creds_json).expect("Should write temp file");
 
-        let result =
-            TokenManager::extract_project_id(&Some(temp_file.to_string_lossy().to_string()));
-        assert!(result.is_ok());
-        let project_id = result.unwrap();
+        let path_string = temp_file.to_string_lossy().to_string();
+        let project_id = TokenManager::extract_project_id(Some(&path_string));
         assert_eq!(project_id, Some("test-project-from-file".to_string()));
 
         // Cleanup

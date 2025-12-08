@@ -33,12 +33,10 @@ pub fn map_error_with_status(status: u16, message: &str) -> axum::response::Resp
         403 => ("authentication_error", Some("forbidden".to_string())),
         404 => ("invalid_request_error", Some("not_found".to_string())),
         429 => ("rate_limit_error", Some("rate_limit_exceeded".to_string())),
-        500 => ("server_error", Some("upstream_error".to_string())),
-        501 => ("server_error", Some("upstream_error".to_string())),
+        500 | 501 | 505..=599 => ("server_error", Some("upstream_error".to_string())),
         502 => ("server_error", Some("bad_gateway".to_string())),
         503 => ("server_error", Some("service_unavailable".to_string())),
         504 => ("server_error", Some("timeout".to_string())),
-        505..=599 => ("server_error", Some("upstream_error".to_string())),
         _ => {
             if !(100..=599).contains(&status) {
                 tracing::warn!(
