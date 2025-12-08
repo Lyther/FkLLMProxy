@@ -13,15 +13,14 @@ const TEST_BODY_LIMIT: usize = 1024 * 1024;
 async fn smoke_health_check() {
     let server = TestServer::new();
 
-    let req = server.make_request("GET", "/health", None, None);
+    let req = TestServer::make_request("GET", "/health", None, None);
     let response = server.call(req).await;
 
     let status = response.status();
     // Health endpoint returns 200 (healthy) or 503 (unhealthy) depending on service availability
     assert!(
         status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
-        "Health endpoint should return 200 or 503, got {}",
-        status
+        "Health endpoint should return 200 or 503, got {status}"
     );
 
     let body = response.into_body();
@@ -42,27 +41,25 @@ async fn smoke_health_check() {
 async fn smoke_auth_middleware() {
     // Test auth disabled (default) - should not require auth
     let server = TestServer::with_auth(false, "");
-    let req = server.make_request("GET", "/health", None, None);
+    let req = TestServer::make_request("GET", "/health", None, None);
     let response = server.call(req).await;
     let status = response.status();
     // Should not get 401 (auth not required), may get 503 (service unavailable)
     assert!(
         status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
-        "Auth disabled: expected 200 or 503, got {}",
-        status
+        "Auth disabled: expected 200 or 503, got {status}"
     );
 
     // Test auth enabled with correct key - should pass auth check
     let server = TestServer::with_auth(true, "smoke-key");
-    let req = server.make_request("GET", "/health", None, Some("smoke-key"));
+    let req = TestServer::make_request("GET", "/health", None, Some("smoke-key"));
     let response = server.call(req).await;
     let status = response.status();
     // Health endpoint is public, but with key should still work
     // Should not get 401, may get 503 (service unavailable)
     assert!(
         status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
-        "Auth enabled with key: expected 200 or 503, got {}",
-        status
+        "Auth enabled with key: expected 200 or 503, got {status}"
     );
 }
 
@@ -71,7 +68,7 @@ async fn smoke_error_format() {
     let server = TestServer::new();
 
     let request_body = r#"{"model": "invalid", "messages": [{"role": "user", "content": "test"}]}"#;
-    let req = server.make_request("POST", "/v1/chat/completions", Some(request_body), None);
+    let req = TestServer::make_request("POST", "/v1/chat/completions", Some(request_body), None);
     let response = server.call(req).await;
 
     let status = response.status();
@@ -80,8 +77,7 @@ async fn smoke_error_format() {
         status == StatusCode::BAD_REQUEST
             || status == StatusCode::SERVICE_UNAVAILABLE
             || status == StatusCode::NOT_FOUND,
-        "Expected 400, 404, or 503 for invalid model, got {}",
-        status
+        "Expected 400, 404, or 503 for invalid model, got {status}"
     );
 
     let body = response.into_body();
@@ -102,7 +98,7 @@ async fn smoke_error_format() {
 async fn smoke_metrics_endpoint() {
     let server = TestServer::new();
 
-    let req = server.make_request("GET", "/metrics", None, None);
+    let req = TestServer::make_request("GET", "/metrics", None, None);
     let response = server.call(req).await;
 
     // Metrics endpoint must exist and return 200

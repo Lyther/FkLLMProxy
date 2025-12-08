@@ -11,7 +11,7 @@ async fn test_health_endpoint_public_when_auth_enabled() {
     // Security: Health endpoint must remain public for load balancer checks
     let server = TestServer::with_auth(true, "secure-test-key-32chars");
 
-    let req = server.make_request("GET", "/health", None, None);
+    let req = TestServer::make_request("GET", "/health", None, None);
     let response = server.call(req).await;
 
     let status = response.status();
@@ -19,8 +19,7 @@ async fn test_health_endpoint_public_when_auth_enabled() {
     // May return 200 (healthy) or 503 (unhealthy) depending on service availability
     assert!(
         status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
-        "Health endpoint must be accessible without authentication (got {}, expected 200 or 503)",
-        status
+        "Health endpoint must be accessible without authentication (got {status}, expected 200 or 503)"
     );
 }
 
@@ -29,7 +28,7 @@ async fn test_metrics_endpoint_protected_when_auth_enabled() {
     // Security: Metrics endpoint must require authentication
     let server = TestServer::with_auth(true, "secure-test-key-32chars");
 
-    let req = server.make_request("GET", "/metrics", None, None);
+    let req = TestServer::make_request("GET", "/metrics", None, None);
     let response = server.call(req).await;
 
     assert_eq!(
@@ -45,10 +44,9 @@ async fn test_chat_endpoint_protected_when_auth_enabled() {
     let server = TestServer::with_auth(true, "secure-test-key-32chars");
 
     let request_body = format!(
-        r#"{{"model": "{}", "messages": [{{"role": "user", "content": "test"}}]}}"#,
-        TEST_GEMINI_MODEL
+        r#"{{"model": "{TEST_GEMINI_MODEL}", "messages": [{{"role": "user", "content": "test"}}]}}"#
     );
-    let req = server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+    let req = TestServer::make_request("POST", "/v1/chat/completions", Some(&request_body), None);
     let response = server.call(req).await;
 
     assert_eq!(
@@ -64,17 +62,16 @@ async fn test_auth_disabled_allows_all_endpoints() {
     let server = TestServer::with_auth(false, "");
 
     // Health should be accessible (may return 503 if services unavailable)
-    let req = server.make_request("GET", "/health", None, None);
+    let req = TestServer::make_request("GET", "/health", None, None);
     let response = server.call(req).await;
     let status = response.status();
     assert!(
         status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
-        "Health endpoint should be accessible when auth disabled (got {})",
-        status
+        "Health endpoint should be accessible when auth disabled (got {status})"
     );
 
     // Metrics should be accessible
-    let req = server.make_request("GET", "/metrics", None, None);
+    let req = TestServer::make_request("GET", "/metrics", None, None);
     let response = server.call(req).await;
     assert_eq!(
         response.status(),
@@ -88,7 +85,7 @@ async fn test_invalid_bearer_token_format_rejected() {
     // Security: Malformed Bearer tokens must be rejected
     let server = TestServer::with_auth(true, "secure-test-key-32chars");
 
-    let mut req = server.make_request("GET", "/metrics", None, None);
+    let mut req = TestServer::make_request("GET", "/metrics", None, None);
     req.headers_mut().insert(
         "Authorization",
         "NotBearer secure-test-key-32chars"
@@ -109,7 +106,7 @@ async fn test_empty_bearer_token_rejected() {
     // Security: Empty Bearer tokens must be rejected
     let server = TestServer::with_auth(true, "secure-test-key-32chars");
 
-    let mut req = server.make_request("GET", "/metrics", None, None);
+    let mut req = TestServer::make_request("GET", "/metrics", None, None);
     req.headers_mut().insert(
         "Authorization",
         "Bearer ".parse().expect("Should be valid header value"),
@@ -132,7 +129,7 @@ async fn test_auth_timing_attack_resistance() {
     let server = TestServer::with_auth(true, correct_key);
 
     // Test with short wrong key
-    let req = server.make_request("GET", "/metrics", None, Some("short"));
+    let req = TestServer::make_request("GET", "/metrics", None, Some("short"));
     let response = server.call(req).await;
     assert_eq!(
         response.status(),
@@ -141,7 +138,7 @@ async fn test_auth_timing_attack_resistance() {
     );
 
     // Test with same-length wrong key
-    let req = server.make_request("GET", "/metrics", None, Some("wrong-test-key-32charsx"));
+    let req = TestServer::make_request("GET", "/metrics", None, Some("wrong-test-key-32charsx"));
     let response = server.call(req).await;
     assert_eq!(
         response.status(),
@@ -151,7 +148,7 @@ async fn test_auth_timing_attack_resistance() {
 
     // Test with very long wrong key
     let long_key = "x".repeat(1000);
-    let req = server.make_request("GET", "/metrics", None, Some(&long_key));
+    let req = TestServer::make_request("GET", "/metrics", None, Some(&long_key));
     let response = server.call(req).await;
     assert_eq!(
         response.status(),
@@ -160,7 +157,7 @@ async fn test_auth_timing_attack_resistance() {
     );
 
     // Test with correct key (should succeed)
-    let req = server.make_request("GET", "/metrics", None, Some(correct_key));
+    let req = TestServer::make_request("GET", "/metrics", None, Some(correct_key));
     let response = server.call(req).await;
     assert_eq!(
         response.status(),
@@ -177,15 +174,14 @@ async fn test_security_headers_present() {
     // This test verifies the endpoint is accessible and doesn't fail
     let server = TestServer::new();
 
-    let req = server.make_request("GET", "/health", None, None);
+    let req = TestServer::make_request("GET", "/health", None, None);
     let response = server.call(req).await;
 
     // Response may be 200 or 503, but should succeed
     let status = response.status();
     assert!(
         status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
-        "Health endpoint should return 200 or 503, got {}",
-        status
+        "Health endpoint should return 200 or 503, got {status}"
     );
 
     // Note: Security headers (X-Content-Type-Options, X-Frame-Options, etc.) are

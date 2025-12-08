@@ -12,7 +12,7 @@ const TEST_BODY_LIMIT: usize = 1024 * 1024;
 async fn test_metrics_endpoint_returns_json() {
     let server = TestServer::new();
 
-    let req = server.make_request("GET", "/metrics", None, None);
+    let req = TestServer::make_request("GET", "/metrics", None, None);
     let response = server.call(req).await;
 
     assert_eq!(
@@ -39,7 +39,7 @@ async fn test_metrics_endpoint_returns_json() {
 async fn test_metrics_prometheus_format() {
     let server = TestServer::new();
 
-    let req = server.make_request("GET", "/metrics/prometheus", None, None);
+    let req = TestServer::make_request("GET", "/metrics/prometheus", None, None);
     let response = server.call(req).await;
 
     assert_eq!(
@@ -66,7 +66,7 @@ async fn test_metrics_increment_after_request() {
     let server = TestServer::new();
 
     // Get initial metrics
-    let req = server.make_request("GET", "/metrics", None, None);
+    let req = TestServer::make_request("GET", "/metrics", None, None);
     let response = server.call(req).await;
     let body = response.into_body();
     let body_bytes = to_bytes(body, TEST_BODY_LIMIT)
@@ -75,11 +75,11 @@ async fn test_metrics_increment_after_request() {
     let initial: Value = serde_json::from_slice(&body_bytes).expect("Initial metrics not JSON");
 
     // Make a health request to increment metrics
-    let req = server.make_request("GET", "/health", None, None);
+    let req = TestServer::make_request("GET", "/health", None, None);
     let _ = server.call(req).await;
 
     // Get updated metrics
-    let req = server.make_request("GET", "/metrics", None, None);
+    let req = TestServer::make_request("GET", "/metrics", None, None);
     let response = server.call(req).await;
     let body = response.into_body();
     let body_bytes = to_bytes(body, TEST_BODY_LIMIT)

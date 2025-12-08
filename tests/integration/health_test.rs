@@ -11,15 +11,14 @@ const TEST_BODY_LIMIT: usize = 1024 * 1024;
 async fn test_health_endpoint() {
     let server = TestServer::new();
 
-    let req = server.make_request("GET", "/health", None, None);
+    let req = TestServer::make_request("GET", "/health", None, None);
     let response = server.call(req).await;
 
     let status = response.status();
     // Health endpoint returns 200 (healthy) or 503 (unhealthy) depending on service availability
     assert!(
         status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
-        "Health endpoint should return 200 or 503, got {}",
-        status
+        "Health endpoint should return 200 or 503, got {status}"
     );
 
     let body = response.into_body();

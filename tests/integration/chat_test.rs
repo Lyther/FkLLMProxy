@@ -17,7 +17,7 @@ const TEST_GEMINI_MODEL: &str = "gemini-2.5-flash";
 const TEST_INVALID_MODEL: &str = "invalid-model-xyz";
 
 #[tokio::test]
-#[ignore] // Requires real provider credentials - run with FORCE_E2E_TESTS=1
+#[ignore = "Requires real provider credentials - run with FORCE_E2E_TESTS=1"]
 async fn test_chat_completions_non_streaming() {
     if !should_run_e2e() {
         eprintln!("⏭️  Skipping E2E test: {}", credential_status());
@@ -31,7 +31,7 @@ async fn test_chat_completions_non_streaming() {
         false,
     );
 
-    let req = server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+    let req = TestServer::make_request("POST", "/v1/chat/completions", Some(&request_body), None);
     let response = server.call(req).await;
 
     assert_eq!(response.status(), StatusCode::OK);
@@ -72,7 +72,7 @@ async fn test_chat_completions_non_streaming() {
 }
 
 #[tokio::test]
-#[ignore] // Requires real provider credentials - run with FORCE_E2E_TESTS=1
+#[ignore = "Requires real provider credentials - run with FORCE_E2E_TESTS=1"]
 async fn test_chat_completions_streaming() {
     if !should_run_e2e() {
         eprintln!("⏭️  Skipping E2E test: {}", credential_status());
@@ -86,7 +86,7 @@ async fn test_chat_completions_streaming() {
         true,
     );
 
-    let req = server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+    let req = TestServer::make_request("POST", "/v1/chat/completions", Some(&request_body), None);
     let response = server.call(req).await;
 
     assert_eq!(response.status(), StatusCode::OK);
@@ -141,7 +141,7 @@ async fn test_chat_completions_invalid_model() {
         false,
     );
 
-    let req = server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+    let req = TestServer::make_request("POST", "/v1/chat/completions", Some(&request_body), None);
     let response = server.call(req).await;
 
     let status = response.status();
@@ -150,8 +150,7 @@ async fn test_chat_completions_invalid_model() {
         status == StatusCode::BAD_REQUEST
             || status == StatusCode::NOT_FOUND
             || status == StatusCode::SERVICE_UNAVAILABLE,
-        "Expected 400, 404, or 503 for invalid model, got {}",
-        status
+        "Expected 400, 404, or 503 for invalid model, got {status}"
     );
 
     let body = response.into_body();
@@ -172,7 +171,7 @@ async fn test_chat_completions_invalid_model() {
 async fn test_chat_completions_malformed_request() {
     let server = TestServer::new();
 
-    let req = server.make_request("POST", "/v1/chat/completions", Some("invalid json"), None);
+    let req = TestServer::make_request("POST", "/v1/chat/completions", Some("invalid json"), None);
     let response = server.call(req).await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -182,8 +181,8 @@ async fn test_chat_completions_malformed_request() {
 async fn test_chat_completions_missing_messages() {
     let server = TestServer::new();
 
-    let request_body = format!(r#"{{"model": "{}"}}"#, TEST_GEMINI_MODEL);
-    let req = server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+    let request_body = format!(r#"{{"model": "{TEST_GEMINI_MODEL}"}}"#);
+    let req = TestServer::make_request("POST", "/v1/chat/completions", Some(&request_body), None);
     let response = server.call(req).await;
 
     // Should fail validation - missing required messages field

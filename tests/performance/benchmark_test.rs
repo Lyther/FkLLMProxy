@@ -4,10 +4,11 @@
 #[cfg(test)]
 mod tests {
     use crate::test_utils::{create_chat_request, create_simple_message, TestServer};
+    use num_traits::ToPrimitive;
     use std::time::Instant;
 
     #[tokio::test]
-    #[ignore]
+    #[ignore = "Performance benchmark - requires real API credentials"]
     async fn test_latency_p50_p95_p99() {
         let server = TestServer::new();
         let iterations = 50;
@@ -22,43 +23,53 @@ mod tests {
 
             let start = Instant::now();
             let req =
-                server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+                TestServer::make_request("POST", "/v1/chat/completions", Some(&request_body), None);
             let response = server.call(req).await;
             let duration = start.elapsed();
 
             if response.status().is_success() {
-                latencies.push(duration.as_millis() as u64);
+                let Ok(millis) = u64::try_from(duration.as_millis()) else {
+                    eprintln!("Warning: Duration too large for u64, skipping sample");
+                    continue;
+                };
+                latencies.push(millis);
             }
         }
 
-        if latencies.is_empty() {
-            panic!("No successful requests for latency benchmark - test cannot provide meaningful results");
-        }
+        assert!(
+            !latencies.is_empty(),
+            "No successful requests for latency benchmark - test cannot provide meaningful results"
+        );
 
-        latencies.sort();
+        latencies.sort_unstable();
 
-        let p50 = percentile(&latencies, 50.0);
-        let p95 = percentile(&latencies, 95.0);
-        let p99 = percentile(&latencies, 99.0);
-        // Fix integer division precision loss: use f64 arithmetic
-        let avg = latencies.iter().sum::<u64>() as f64 / latencies.len() as f64;
+        let p50 = percentile(&latencies, 50);
+        let p95 = percentile(&latencies, 95);
+        let p99 = percentile(&latencies, 99);
+        // Calculate average with f64 precision (acceptable for benchmark statistics)
+        let sum: u64 = latencies.iter().sum();
+        let count = latencies.len();
+        let avg = sum.to_f64().unwrap_or(f64::MAX) / count.to_f64().unwrap_or(1.0);
         let min = latencies[0];
         let max = latencies[latencies.len() - 1];
 
-        eprintln!("Latency benchmark results ({} samples):", latencies.len());
-        eprintln!("  Min: {}ms", min);
-        eprintln!("  P50: {}ms", p50);
-        eprintln!("  P95: {}ms", p95);
-        eprintln!("  P99: {}ms", p99);
-        eprintln!("  Max: {}ms", max);
-        eprintln!("  Avg: {:.2}ms", avg);
+        eprintln!(
+            "Latency benchmark results ({sample_count} samples):",
+            sample_count = latencies.len()
+        );
+        eprintln!("  Min: {min}ms");
+        eprintln!("  P50: {p50}ms");
+        eprintln!("  P95: {p95}ms");
+        eprintln!("  P99: {p99}ms");
+        eprintln!("  Max: {max}ms");
+        eprintln!("  Avg: {avg:.2}ms");
 
         // Assert reasonable latencies (adjust thresholds as needed)
-        assert!(p95 < 10000, "P95 latency too high: {}ms", p95);
+        assert!(p95 < 10000, "P95 latency too high: {p95}ms");
     }
 
     #[tokio::test]
-    #[ignore]
+    #[ignore = "Performance benchmark - requires real API credentials"]
     async fn test_streaming_latency() {
         let server = TestServer::new();
         let iterations = 20;
@@ -74,7 +85,7 @@ mod tests {
 
             let start = Instant::now();
             let req =
-                server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+                TestServer::make_request("POST", "/v1/chat/completions", Some(&request_body), None);
             let response = server.call(req).await;
 
             if response.status().is_success() {
@@ -93,40 +104,50 @@ mod tests {
                 let has_data = lines.iter().any(|l| l.starts_with("data: "));
 
                 if has_data {
-                    first_chunk_latencies.push(first_chunk_time.as_millis() as u64);
+                    let Ok(millis) = u64::try_from(first_chunk_time.as_millis()) else {
+                        eprintln!(
+                            "Warning: First chunk duration too large for u64, skipping sample"
+                        );
+                        continue;
+                    };
+                    first_chunk_latencies.push(millis);
                 }
 
                 let total_time = start.elapsed();
-                total_latencies.push(total_time.as_millis() as u64);
+                let Ok(total_millis) = u64::try_from(total_time.as_millis()) else {
+                    eprintln!("Warning: Total duration too large for u64, skipping sample");
+                    continue;
+                };
+                total_latencies.push(total_millis);
             }
         }
 
-        if first_chunk_latencies.is_empty() {
-            panic!("No successful streaming requests with data chunks for latency benchmark - test cannot provide meaningful results");
-        }
+        assert!(!first_chunk_latencies.is_empty(), "No successful streaming requests with data chunks for latency benchmark - test cannot provide meaningful results");
 
-        first_chunk_latencies.sort();
-        total_latencies.sort();
+        first_chunk_latencies.sort_unstable();
+        total_latencies.sort_unstable();
 
-        let first_chunk_p95 = percentile(&first_chunk_latencies, 95.0);
-        let total_p95 = percentile(&total_latencies, 95.0);
+        let first_chunk_p95 = percentile(&first_chunk_latencies, 95);
+        let total_p95 = percentile(&total_latencies, 95);
 
         eprintln!("Streaming latency benchmark results:");
-        eprintln!("  First chunk P95: {}ms", first_chunk_p95);
-        eprintln!("  Total P95: {}ms", total_p95);
+        eprintln!("  First chunk P95: {first_chunk_p95}ms");
+        eprintln!("  Total P95: {total_p95}ms");
 
         assert!(
             first_chunk_p95 < 5000,
-            "First chunk latency too high: {}ms",
-            first_chunk_p95
+            "First chunk latency too high: {first_chunk_p95}ms"
         );
     }
 
-    fn percentile(sorted_data: &[u64], p: f64) -> u64 {
+    fn percentile(sorted_data: &[u64], p: u8) -> u64 {
         if sorted_data.is_empty() {
             return 0;
         }
-        let index = ((sorted_data.len() - 1) as f64 * p / 100.0).ceil() as usize;
-        sorted_data[index.min(sorted_data.len() - 1)]
+        let clamped = u128::from(p.min(100));
+        let len = u128::try_from(sorted_data.len().saturating_sub(1)).unwrap_or(0);
+        let index = (len * clamped).div_ceil(100);
+        let safe_index = usize::try_from(index).unwrap_or(sorted_data.len().saturating_sub(1));
+        sorted_data[safe_index.min(sorted_data.len().saturating_sub(1))]
     }
 }

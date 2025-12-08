@@ -2,6 +2,7 @@
 use axum::{body::Body, http::Request, Router};
 use std::sync::Arc;
 use tower::util::ServiceExt;
+use vertex_bridge::config;
 
 /// Check if we're running in a CI environment
 pub fn is_ci() -> bool {
@@ -70,7 +71,7 @@ impl TestServer {
         Self::with_auth(false, "")
     }
 
-    pub fn with_auth(require_auth: bool, master_key: &str) -> Self {
+    fn create_test_config(require_auth: bool, master_key: &str) -> AppConfig {
         // Use real credentials from env if available, otherwise use fake for unit tests
         let api_key = std::env::var("VERTEX_API_KEY").ok();
         let credentials_file = std::env::var("GOOGLE_APPLICATION_CREDENTIALS").ok();
@@ -79,7 +80,7 @@ impl TestServer {
             .ok()
             .unwrap_or_else(|| "us-central1".to_string());
 
-        let config = AppConfig {
+        AppConfig {
             server: ServerConfig {
                 host: "127.0.0.1".to_string(),
                 port: 0,                            // Let OS assign port
@@ -109,6 +110,12 @@ impl TestServer {
             anthropic: AnthropicConfig {
                 bridge_url: "http://localhost:4001".to_string(),
             },
+            gemini_cli: config::GeminiCliConfig {
+                enabled: false,
+                cli_path: None,
+                timeout_secs: 30,
+                max_concurrency: 4,
+            },
             rate_limit: RateLimitConfig {
                 capacity: 1000,
                 refill_per_second: 100,
@@ -122,24 +129,28 @@ impl TestServer {
                 enabled: false,
                 default_ttl_secs: 3600,
             },
-        };
+        }
+    }
 
+    fn create_app_state(config: &AppConfig) -> AppState {
         let token_manager = TokenManager::new(
             config.vertex.api_key.clone(),
             config.vertex.credentials_file.clone(),
+            config.vertex.project_id.clone(),
         )
         .expect("Failed to create token manager");
 
-        let state = AppState {
+        AppState {
             config: Arc::new(config.clone()),
             token_manager,
             cache: Arc::new(Cache::new(
                 config.cache.enabled,
                 config.cache.default_ttl_secs,
             )),
-            provider_registry: Arc::new(ProviderRegistry::with_config(Some(
-                config.anthropic.bridge_url.clone(),
-            ))),
+            provider_registry: Arc::new(ProviderRegistry::with_config(
+                &Some(config.anthropic.bridge_url.clone()),
+                &None,
+            )),
             rate_limiter: RateLimiter::new(1000, 100), // High limits for tests
             circuit_breaker: Arc::new(CircuitBreaker::new(
                 config.circuit_breaker.failure_threshold,
@@ -147,8 +158,10 @@ impl TestServer {
                 config.circuit_breaker.success_threshold,
             )),
             metrics: Arc::new(Metrics::new()),
-        };
+        }
+    }
 
+    fn create_router(state: AppState) -> Router {
         // Public routes (no authentication required)
         let public_routes =
             Router::new().route("/health", axum::routing::get(health::health_check));
@@ -170,10 +183,18 @@ impl TestServer {
             ));
 
         // Combine routes
-        let app = Router::new()
+        Router::new()
             .merge(public_routes)
             .merge(protected_routes)
-            .with_state(state.clone());
+            .with_state(state)
+    }
+
+    pub fn with_auth(require_auth: bool, master_key: &str) -> Self {
+        let config = Self::create_test_config(require_auth, master_key);
+
+        let state = Self::create_app_state(&config);
+
+        let app = Self::create_router(state);
 
         Self { app }
     }
@@ -183,7 +204,6 @@ impl TestServer {
     }
 
     pub fn make_request(
-        &self,
         method: &str,
         uri: &str,
         body: Option<&str>,
@@ -192,7 +212,7 @@ impl TestServer {
         let mut builder = Request::builder().method(method).uri(uri);
 
         if let Some(auth_key) = auth {
-            builder = builder.header("Authorization", format!("Bearer {}", auth_key));
+            builder = builder.header("Authorization", format!("Bearer {auth_key}"));
         }
 
         if let Some(body_str) = body {
@@ -207,16 +227,15 @@ impl TestServer {
 pub fn create_chat_request(model: &str, messages: &str, stream: bool) -> String {
     format!(
         r#"{{
-            "model": "{}",
-            "messages": {},
-            "stream": {}
-        }}"#,
-        model, messages, stream
+            "model": "{model}",
+            "messages": {messages},
+            "stream": {stream}
+        }}"#
     )
 }
 
 pub fn create_simple_message(role: &str, content: &str) -> String {
-    format!(r#"[{{"role": "{}", "content": "{}"}}]"#, role, content)
+    format!(r#"[{{"role": "{role}", "content": "{content}"}}]"#)
 }
 
 #[cfg(test)]

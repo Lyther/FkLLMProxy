@@ -4,6 +4,7 @@
 #[cfg(test)]
 mod tests {
     use crate::test_utils::{create_chat_request, create_simple_message, TestServer};
+    use num_traits::ToPrimitive;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
     use tokio::sync::Semaphore;
@@ -12,10 +13,10 @@ mod tests {
     const TEST_TIMEOUT_SECS: u64 = 30;
 
     #[tokio::test]
-    #[ignore] // Performance test - run with: cargo test --test load_test --release -- --ignored
+    #[ignore = "Performance test - run with: cargo test --test load_test --release -- --ignored"]
     async fn test_concurrent_requests() {
-        let concurrency = 10;
-        let requests_per_worker = 5;
+        let concurrency = 10usize;
+        let requests_per_worker = 5usize;
 
         let semaphore = Arc::new(Semaphore::new(concurrency));
         let mut handles = Vec::new();
@@ -37,8 +38,12 @@ mod tests {
                     false,
                 );
 
-                let req =
-                    server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+                let req = TestServer::make_request(
+                    "POST",
+                    "/v1/chat/completions",
+                    Some(&request_body),
+                    None,
+                );
                 let response = server.call(req).await;
 
                 drop(permit);
@@ -67,13 +72,16 @@ mod tests {
         let duration = start.elapsed();
 
         eprintln!("Concurrent load test results:");
-        eprintln!("  Total requests: {}", concurrency * requests_per_worker);
-        eprintln!("  Successful: {}", success_count);
-        eprintln!("  Errors: {}", error_count);
-        eprintln!("  Duration: {:?}", duration);
+        eprintln!(
+            "  Total requests: {total_requests}",
+            total_requests = concurrency * requests_per_worker
+        );
+        eprintln!("  Successful: {success_count}");
+        eprintln!("  Errors: {error_count}");
+        eprintln!("  Duration: {duration:?}");
         eprintln!(
             "  Throughput: {:.2} req/s",
-            (concurrency * requests_per_worker) as f64 / duration.as_secs_f64()
+            (concurrency * requests_per_worker).to_f64().unwrap_or(0.0) / duration.as_secs_f64()
         );
 
         // Verify all requests completed
@@ -93,7 +101,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Performance test - run with: cargo test --test load_test --release -- --ignored
+    #[ignore = "Performance test - run with: cargo test --test load_test --release -- --ignored"]
     async fn test_sustained_load() {
         let server = TestServer::new();
         let duration_secs = 10;
@@ -104,7 +112,7 @@ mod tests {
         let mut success_count = 0;
         // Fix integer division bug: use Duration::from_secs_f64 to prevent division by zero
         // If target_rps > 1000, this would cause infinite loop with sleep(0)
-        let interval = Duration::from_secs_f64((1.0 / target_rps as f64).max(0.001));
+        let interval = Duration::from_secs_f64((1.0 / f64::from(target_rps)).max(0.001));
 
         while start.elapsed() < Duration::from_secs(duration_secs) {
             let request_body = create_chat_request(
@@ -114,7 +122,7 @@ mod tests {
             );
 
             let req =
-                server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+                TestServer::make_request("POST", "/v1/chat/completions", Some(&request_body), None);
             let response = server.call(req).await;
 
             request_count += 1;
@@ -128,12 +136,12 @@ mod tests {
         let actual_duration = start.elapsed();
 
         eprintln!("Sustained load test results:");
-        eprintln!("  Duration: {:?}", actual_duration);
-        eprintln!("  Total requests: {}", request_count);
-        eprintln!("  Successful: {}", success_count);
+        eprintln!("  Duration: {actual_duration:?}");
+        eprintln!("  Total requests: {request_count}");
+        eprintln!("  Successful: {success_count}");
         eprintln!(
             "  Actual RPS: {:.2}",
-            request_count as f64 / actual_duration.as_secs_f64()
+            f64::from(request_count) / actual_duration.as_secs_f64()
         );
 
         assert!(request_count > 0);

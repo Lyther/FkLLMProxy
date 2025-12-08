@@ -16,10 +16,9 @@ async fn test_error_response_format() {
     let server = TestServer::new();
 
     let request_body = format!(
-        r#"{{"model": "{}", "messages": [{{"role": "user", "content": "test"}}]}}"#,
-        TEST_INVALID_MODEL
+        r#"{{"model": "{TEST_INVALID_MODEL}", "messages": [{{"role": "user", "content": "test"}}]}}"#
     );
-    let req = server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+    let req = TestServer::make_request("POST", "/v1/chat/completions", Some(&request_body), None);
     let response = server.call(req).await;
 
     let status = response.status();
@@ -28,8 +27,7 @@ async fn test_error_response_format() {
         status == StatusCode::BAD_REQUEST
             || status == StatusCode::NOT_FOUND
             || status == StatusCode::SERVICE_UNAVAILABLE,
-        "Expected 400, 404, or 503 for invalid model, got {}",
-        status
+        "Expected 400, 404, or 503 for invalid model, got {status}"
     );
 
     let body = response.into_body();
@@ -60,7 +58,7 @@ async fn test_401_error_format() {
     // Test 401 on protected endpoint with wrong key
     let server = TestServer::with_auth(true, "correct-key");
 
-    let req = server.make_request("GET", "/metrics", None, Some("wrong-key"));
+    let req = TestServer::make_request("GET", "/metrics", None, Some("wrong-key"));
     let response = server.call(req).await;
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -71,7 +69,7 @@ async fn test_401_error_format() {
 async fn test_404_not_found() {
     let server = TestServer::new();
 
-    let req = server.make_request("GET", "/nonexistent", None, None);
+    let req = TestServer::make_request("GET", "/nonexistent", None, None);
     let response = server.call(req).await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -81,7 +79,7 @@ async fn test_404_not_found() {
 async fn test_malformed_json_400() {
     let server = TestServer::new();
 
-    let req = server.make_request("POST", "/v1/chat/completions", Some("{invalid}"), None);
+    let req = TestServer::make_request("POST", "/v1/chat/completions", Some("{invalid}"), None);
     let response = server.call(req).await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -92,8 +90,8 @@ async fn test_missing_required_fields() {
     let server = TestServer::new();
 
     // Missing messages
-    let request_body = format!(r#"{{"model": "{}"}}"#, TEST_GEMINI_MODEL);
-    let req = server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+    let request_body = format!(r#"{{"model": "{TEST_GEMINI_MODEL}"}}"#);
+    let req = TestServer::make_request("POST", "/v1/chat/completions", Some(&request_body), None);
     let response = server.call(req).await;
 
     assert!(
@@ -107,15 +105,14 @@ async fn test_missing_required_fields() {
 async fn test_empty_messages_array() {
     let server = TestServer::new();
 
-    let request_body = format!(r#"{{"model": "{}", "messages": []}}"#, TEST_GEMINI_MODEL);
-    let req = server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+    let request_body = format!(r#"{{"model": "{TEST_GEMINI_MODEL}", "messages": []}}"#);
+    let req = TestServer::make_request("POST", "/v1/chat/completions", Some(&request_body), None);
     let response = server.call(req).await;
 
     let status = response.status();
     // Empty messages array should fail validation (400) or provider error (503)
     assert!(
         status == StatusCode::BAD_REQUEST || status == StatusCode::SERVICE_UNAVAILABLE,
-        "Empty messages should return 400 or 503, got {}",
-        status
+        "Empty messages should return 400 or 503, got {status}"
     );
 }

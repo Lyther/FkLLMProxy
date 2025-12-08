@@ -11,7 +11,7 @@ async fn test_rate_limit_does_not_block_normal_traffic() {
     // TestServer uses high limits (100 capacity), so these should all succeed
     // May return 503 if underlying services are unavailable in test env
     for i in 0..10 {
-        let req = server.make_request("GET", "/health", None, None);
+        let req = TestServer::make_request("GET", "/health", None, None);
         let response = server.call(req).await;
         let status = response.status();
         assert!(
@@ -37,7 +37,7 @@ async fn test_rate_limit_per_auth_key() {
     // Make requests with auth key - should be rate limited per key
     // May return 503 if underlying services are unavailable in test env
     for i in 0..5 {
-        let req = server.make_request("GET", "/health", None, Some("test-key-for-rate-limit"));
+        let req = TestServer::make_request("GET", "/health", None, Some("test-key-for-rate-limit"));
         let response = server.call(req).await;
         let status = response.status();
         assert!(
@@ -60,15 +60,14 @@ async fn test_rate_limit_per_auth_key() {
 async fn test_rate_limit_headers_on_response() {
     let server = TestServer::new();
 
-    let req = server.make_request("GET", "/health", None, None);
+    let req = TestServer::make_request("GET", "/health", None, None);
     let response = server.call(req).await;
 
     let status = response.status();
     // May return 503 if underlying services are unavailable in test env
     assert!(
         status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
-        "Expected OK or SERVICE_UNAVAILABLE, got {}",
-        status
+        "Expected OK or SERVICE_UNAVAILABLE, got {status}"
     );
 
     // Check for rate limit headers (X-RateLimit-* headers)

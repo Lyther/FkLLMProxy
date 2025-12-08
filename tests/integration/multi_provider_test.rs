@@ -20,7 +20,7 @@ async fn test_provider_routing_gemini_to_vertex() {
         false,
     );
 
-    let req = server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+    let req = TestServer::make_request("POST", "/v1/chat/completions", Some(&request_body), None);
     let response = server.call(req).await;
 
     // Should route to Vertex provider (may fail without credentials, but routing should work)
@@ -42,7 +42,7 @@ async fn test_provider_routing_claude_to_anthropic() {
         false,
     );
 
-    let req = server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+    let req = TestServer::make_request("POST", "/v1/chat/completions", Some(&request_body), None);
     let response = server.call(req).await;
 
     // Should route to Anthropic provider (may fail without bridge, but routing should work)
@@ -63,7 +63,7 @@ async fn test_provider_routing_unknown_model_defaults_to_vertex() {
         false,
     );
 
-    let req = server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+    let req = TestServer::make_request("POST", "/v1/chat/completions", Some(&request_body), None);
     let response = server.call(req).await;
 
     // Unknown models default to Vertex
@@ -89,7 +89,8 @@ async fn test_provider_routing_multiple_models() {
     for model in models {
         let request_body = create_chat_request(model, &create_simple_message("user", "Hi"), false);
 
-        let req = server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+        let req =
+            TestServer::make_request("POST", "/v1/chat/completions", Some(&request_body), None);
         let response = server.call(req).await;
 
         // Verify routing works (may fail without credentials, but should route correctly)
@@ -113,7 +114,7 @@ async fn test_provider_routing_streaming_vs_non_streaming() {
         false,
     );
 
-    let req = server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+    let req = TestServer::make_request("POST", "/v1/chat/completions", Some(&request_body), None);
     let response = server.call(req).await;
 
     if response.status() == StatusCode::OK {
@@ -133,7 +134,7 @@ async fn test_provider_routing_streaming_vs_non_streaming() {
         true,
     );
 
-    let req = server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+    let req = TestServer::make_request("POST", "/v1/chat/completions", Some(&request_body), None);
     let response = server.call(req).await;
 
     if response.status() == StatusCode::OK {
@@ -150,7 +151,7 @@ async fn test_provider_routing_streaming_vs_non_streaming() {
 #[test]
 fn test_provider_routing_logic() {
     // Test routing logic via registry
-    let registry = ProviderRegistry::with_config(Some("http://localhost:4001".to_string()));
+    let registry = ProviderRegistry::with_config(&Some("http://localhost:4001".to_string()), &None);
 
     // Gemini models should route to Vertex
     assert!(registry.route_by_model("gemini-2.5-flash").is_some());
@@ -177,7 +178,8 @@ async fn test_circuit_breaker_with_provider_routing() {
     );
 
     for _ in 0..5 {
-        let req = server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+        let req =
+            TestServer::make_request("POST", "/v1/chat/completions", Some(&request_body), None);
         let response = server.call(req).await;
         // Circuit breaker should allow requests (may fail without credentials)
         assert!(

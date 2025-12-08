@@ -24,13 +24,13 @@ fn has_anthropic_credentials() -> bool {
         || std::env::var("APP_ANTHROPIC__BRIDGE_URL").is_ok()
 }
 
-/// Check if Vertex credentials are available - reuses has_real_credentials from test_utils
+/// Check if Vertex credentials are available - reuses `has_real_credentials` from `test_utils`.
 fn has_vertex_credentials() -> bool {
     has_real_credentials()
 }
 
 #[tokio::test]
-#[ignore] // Requires real Vertex API credentials - run with FORCE_E2E_TESTS=1
+#[ignore = "Requires real Vertex API credentials - run with FORCE_E2E_TESTS=1"]
 async fn test_vertex_e2e_non_streaming() {
     if !has_vertex_credentials() {
         eprintln!("⏭️  Skipping Vertex E2E test: {}", credential_status());
@@ -45,7 +45,7 @@ async fn test_vertex_e2e_non_streaming() {
         false,
     );
 
-    let req = server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+    let req = TestServer::make_request("POST", "/v1/chat/completions", Some(&request_body), None);
     let response = server.call(req).await;
 
     assert_eq!(response.status(), StatusCode::OK);
@@ -77,7 +77,7 @@ async fn test_vertex_e2e_non_streaming() {
 }
 
 #[tokio::test]
-#[ignore] // Requires real Vertex API credentials - run with FORCE_E2E_TESTS=1
+#[ignore = "Requires real Vertex API credentials - run with FORCE_E2E_TESTS=1"]
 async fn test_vertex_e2e_streaming() {
     if !has_vertex_credentials() {
         eprintln!(
@@ -95,7 +95,7 @@ async fn test_vertex_e2e_streaming() {
         true,
     );
 
-    let req = server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+    let req = TestServer::make_request("POST", "/v1/chat/completions", Some(&request_body), None);
     let response = server.call(req).await;
 
     assert_eq!(response.status(), StatusCode::OK);
@@ -125,7 +125,7 @@ async fn test_vertex_e2e_streaming() {
 }
 
 #[tokio::test]
-#[ignore] // Requires real Anthropic bridge - run with FORCE_E2E_TESTS=1
+#[ignore = "Requires real Anthropic bridge - run with FORCE_E2E_TESTS=1"]
 async fn test_anthropic_e2e_non_streaming() {
     if !has_anthropic_credentials() {
         eprintln!("⏭️  Skipping Anthropic E2E test: Anthropic bridge not configured");
@@ -140,7 +140,7 @@ async fn test_anthropic_e2e_non_streaming() {
         false,
     );
 
-    let req = server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+    let req = TestServer::make_request("POST", "/v1/chat/completions", Some(&request_body), None);
     let response = server.call(req).await;
 
     assert_eq!(response.status(), StatusCode::OK);
@@ -172,7 +172,7 @@ async fn test_anthropic_e2e_non_streaming() {
 }
 
 #[tokio::test]
-#[ignore] // Requires real Anthropic bridge - run with FORCE_E2E_TESTS=1
+#[ignore = "Requires real Anthropic bridge - run with FORCE_E2E_TESTS=1"]
 async fn test_anthropic_e2e_streaming() {
     if !has_anthropic_credentials() {
         eprintln!("⏭️  Skipping Anthropic E2E streaming test: Anthropic bridge not configured");
@@ -187,7 +187,7 @@ async fn test_anthropic_e2e_streaming() {
         true,
     );
 
-    let req = server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+    let req = TestServer::make_request("POST", "/v1/chat/completions", Some(&request_body), None);
     let response = server.call(req).await;
 
     assert_eq!(response.status(), StatusCode::OK);
@@ -217,7 +217,7 @@ async fn test_anthropic_e2e_streaming() {
 }
 
 #[tokio::test]
-#[ignore] // Requires real credentials - run with FORCE_E2E_TESTS=1
+#[ignore = "Requires real credentials - run with FORCE_E2E_TESTS=1"]
 async fn test_e2e_latency_benchmark() {
     if !should_run_e2e() {
         eprintln!("⏭️  Skipping latency benchmark: {}", credential_status());
@@ -233,7 +233,7 @@ async fn test_e2e_latency_benchmark() {
     );
 
     let start = std::time::Instant::now();
-    let req = server.make_request("POST", "/v1/chat/completions", Some(&request_body), None);
+    let req = TestServer::make_request("POST", "/v1/chat/completions", Some(&request_body), None);
     let response = server.call(req).await;
     let duration = start.elapsed();
 
@@ -241,12 +241,11 @@ async fn test_e2e_latency_benchmark() {
 
     // Log latency for monitoring (use as_millis() for better precision)
     let latency_ms = duration.as_millis();
-    eprintln!("⏱️  E2E latency: {}ms", latency_ms);
+    eprintln!("⏱️  E2E latency: {latency_ms}ms");
 
     // Assert reasonable latency (should be < 10s for simple request)
     assert!(
         latency_ms < 10_000,
-        "Request took too long: {}ms (expected < 10000ms)",
-        latency_ms
+        "Request took too long: {latency_ms}ms (expected < 10000ms)"
     );
 }
